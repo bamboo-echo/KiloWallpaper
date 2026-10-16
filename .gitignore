@@ -1,0 +1,69 @@
+# ============================================================
+#  KiloWallpaper - 忽略规则
+# ============================================================
+
+# -------- 私有素材：不进仓库，但保留在本地磁盘 --------
+# 视频 / 动图属于使用者自有资产（版权 + AI 生成内容标识），仓库只保留说明文件。
+# 除 /assets/ 外，再按扩展名全局兜底，防止素材被误放进仓库根/cpp/ 等处时被提交。
+/assets/*
+*.mp4
+*.mov
+*.avi
+*.wmv
+*.mkv
+*.webm
+*.m4v
+*.gif
+!/assets/README.md
+
+# -------- 本机素材路径配置 --------
+# 真实配置里是本机绝对路径，不入库；仓库只放示例文件。
+/cpp/wallpaper.txt
+
+# -------- 编译产物 --------
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.res
+*.idb
+*.o
+*.a
+*.so
+*.dylib
+.vs/
+build/
+out/
+dist/
+
+# -------- 运行时状态（进程间握手协议文件） --------
+wallpaper.ok
+wallpaper.quit
+wallpaper.graceful
+wallpaper.*.pid
+
+# -------- 运行时日志 --------
+debug.log
+*.log
+
+# -------- 开发期探针产物 --------
+.probe-*
+.patch-*
+.cm.txt
+_tmp_scan/
+/tools/shots/
+shots/
+desktop_*.png
+screen_*.png
+shot_*.png
+icons_check.png
+win_content.png
+
+# -------- Python --------
+__pycache__/
+*.pyc
+.venv/
+venv/

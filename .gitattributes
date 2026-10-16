@@ -1,0 +1,38 @@
+# ============================================================
+#  KiloWallpaper - git attributes
+# ============================================================
+
+# 文本文件统一以 LF 入库；检出时再按下面更具体的规则还原。
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF：cmd.exe 对带标签(goto/label)的 LF 版 .bat 会解析异常。
+# 项目约定：.bat 内只写 ASCII；需要中文时由 PowerShell 用码点生成。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：禁止任何换行 / 编码转换
+*.mp4  binary
+*.mov  binary
+*.avi  binary
+*.wmv  binary
+*.mkv  binary
+*.webm binary
+*.m4v  binary
+*.gif  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.bmp  binary
+*.exe  binary
+*.dll  binary
+*.obj  binary
+*.pdb  binary
+*.lib  binary
+
+# 语言统计与 diff
+*.cpp  text
+*.h    text
+*.md   text
+*.py   text
