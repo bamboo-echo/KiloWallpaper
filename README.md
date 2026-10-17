@@ -1,5 +1,7 @@
 # KiloWallpaper
 
+[![build](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml/badge.svg)](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml)
+
 用 Win32 原生 API 手写的极简动态壁纸。**零第三方依赖，两个二进制合计 97.5 KB，
 播放 2K 视频时只占一个逻辑核的约 2~4%。**
 
@@ -203,3 +205,22 @@ uninstall.bat
 
 [MIT](LICENSE)。可自由商用、修改、再分发，保留版权声明即可。
 如需 Apache-2.0 等带专利授权条款的许可证，可以自行替换 `LICENSE` 文件。
+
+---
+
+## CI
+
+每次 push 到 `main` 与每个 PR 都会跑 [.github/workflows/build.yml](.github/workflows/build.yml)：
+
+1. **MSVC 编译**：在 `windows-2022` runner 上直接跑 `cpp\build.bat`，
+   把两个 exe 传成 artifact（别人可下载即用，无需自己装 VS）。
+2. **校验 README 数字**：跑 `tools\verify_claims.py`，README 里写的行数与
+   二进制体积必须与实际一致，否则 CI 变红。
+   —— 这条专门防「改了代码忘了更新文档里的数字」。
+3. **零第三方 action**：GitHub 的 Windows runner 预装了 Visual Studio 2022 与
+   Windows SDK，`build.bat` 自己的 `vswhere` 就能定位工具链，不需要额外的
+   setup action。
+
+> **CI 验证不了什么**：runner 里没有 Explorer 桌面（无 `Progman` / `WorkerW`），
+> 所以「桌面嵌入是否真的生效」CI 无法验证。那部分由 `wallpaper.embed` 策略标记
+> 与本文「各 Windows 版本的验证状态」一节承担。CI 只保证**能编译 + 数字不漂**。

@@ -1,0 +1,46 @@
+# KiloWallpaper CI - 编译 + 文档数字校验
+#
+# 干什么：
+#   1. 在 windows-2022 runner 上用 MSVC 编译两个 exe（直接跑 cpp\build.bat）
+#   2. 跑 tools\verify_claims.py：README 里的行数/体积数字必须与实际一致
+#   3. 把编译产物传成 artifact，方便别人直接下载试用
+#
+# 为什么不装第三方 action：GitHub 的 windows runner 预装了 Visual Studio 2022
+# 与 Windows SDK，build.bat 自己的 vswhere 就能定位到工具链。保持零第三方依赖。
+#
+# 验证不了什么：runner 里没有 Explorer 桌面（无 Progman / WorkerW），所以
+# 「桌面嵌入是否真的生效」CI 无法验证 —— 那部分由 cpp\wallpaper.embed 标记与
+# 文档中的实测状态说明承担（见 README「各 Windows 版本的验证状态」）。
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: MSVC 编译 + 校验 README 数字
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译（build.bat）
+        run: cpp\build.bat
+        shell: cmd
+
+      - name: 校验 README 里的行数与体积
+        run: python tools\verify_claims.py
+        shell: cmd
+
+      - name: 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: DynamicWallpaper-binaries
+          path: |
+            cpp/DynamicWallpaper.exe
+            cpp/DynamicWallpaperGuard.exe
+          if-no-files-found: error

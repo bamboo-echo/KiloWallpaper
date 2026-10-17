@@ -6,6 +6,7 @@
 | 脚本 | 用途 | 依赖 |
 | --- | --- | --- |
 | `check_embed.py` | 打印 **Windows 版本 / build 号**、**当前生效的嵌入策略**（读 `cpp\wallpaper.embed`），以及 `Progman` → `SHELLDLL_DefView` → `SysListView32` → 壁纸窗口的完整层级、父子关系、扩展样式与取样像素值。**排查「壁纸没显示 / 图标被盖住」第一个该跑的就是它。** | 无（仅标准库 `ctypes`） |
+| `verify_claims.py` | 校验 README 里写的行数与二进制体积是否与实际一致。**CI 每次 push 都会跑它**——改了代码忘了更新 README 里的数字，会直接让 CI 变红。 | 无（仅标准库） |
 | `grab_layers.py` | 把桌面各层窗口分别用 `PrintWindow` 截图存到 `shots/`，肉眼确认每层实际渲染了什么。 | Pillow |
 | `restore_desktop.py` | 把图标层 `SysListView32` 的 `WS_EX_LAYERED`、`SetWindowTheme`、透明背景等改动恢复成系统默认。**嵌入逻辑出错导致桌面图标不见了时用它救场。** | 无（仅标准库 `ctypes`） |
 
@@ -13,13 +14,14 @@
 
 ```bat
 python tools\check_embed.py
+python tools\verify_claims.py
 python tools\restore_desktop.py
 pip install pillow
 python tools\grab_layers.py
 ```
 
-`grab_layers.py` 依赖 Pillow（`pip install pillow`）——这是三个工具里唯一的外部依赖，
-其余两个只用 Python 标准库。
+`grab_layers.py` 依赖 Pillow（`pip install pillow`）——这是四个工具里唯一的外部依赖，
+其余三个只用 Python 标准库。
 
 ## 原理备注
 
