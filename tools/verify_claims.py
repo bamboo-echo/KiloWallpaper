@@ -19,6 +19,15 @@ import os
 import re
 import sys
 
+# CI runner 的 stdout 默认是 cp1252，直接 print 中文标签会 UnicodeEncodeError
+# 崩掉（本地控制台是 UTF-8 所以本地跑不出来）。强制 UTF-8 输出，并对极端
+# 情况下的不可编码字符降级，绝不让脚本因为打印而失败。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CPP = os.path.join(ROOT, "cpp")
 README = os.path.join(ROOT, "README.md")
