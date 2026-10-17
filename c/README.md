@@ -1,7 +1,9 @@
 # KiloWallpaper — C 参考实现
 
 纯 C（C11）直接调用 Win32 API，**零第三方依赖**（只链接 Windows 系统 DLL），
-与 `cpp/` 版功能等价：桌面嵌入、DXVA 硬解视频、GDI+ GIF、双进程守护、优雅关闭。
+与 `cpp/` 版功能等价：桌面嵌入、DXVA 硬解视频、GDI+ GIF、双进程守护、优雅关闭、
+配置热重载（3 秒内换素材）、`wallpaper.embed` 策略标记、周期资源快照日志
+（每 60s 记录工作集/提交/句柄/GDI/USER 对象数，排查内存泄漏用）。
 
 > 这份实现的目的是证明同一套桌面嵌入与视频呈现链路在 **纯 C** 下同样成立：
 > COM 接口手写 vtable、GDI+ 用 flat API、Media Foundation 属性用 `GetUINT64` 拆包。
