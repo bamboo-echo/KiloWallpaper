@@ -1,0 +1,10 @@
+# KiloWallpaper (Rust) 素材路径配置
+#
+# 复制为 wallpaper.txt（与 exe 同目录），把第一行改成你的素材路径。
+# 保存为 UTF-8（有无 BOM 均可）；只读取第一行；命令行参数优先。
+# 相对路径按 exe 所在目录解析。
+#
+# 支持：视频 .mp4 .mov .avi .wmv .mkv .webm .m4v；GIF / 静态图等 GDI+ 可解码格式。
+#
+# 示例：
+# ..\assets\my_loop.mp4

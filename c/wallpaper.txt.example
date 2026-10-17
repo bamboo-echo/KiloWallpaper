@@ -1,0 +1,13 @@
+# KiloWallpaper (C) 素材路径配置
+#
+# 用法：复制本文件为 wallpaper.txt（与 DynamicWallpaper.exe 同目录），
+#       把第一行改成你的素材路径。保存为 UTF-8（有无 BOM 均可）。
+#
+# 规则：
+#   - 只读取第一行；命令行参数优先于本文件。
+#   - 相对路径按 exe 所在目录解析；也可写绝对路径。
+#   - 支持视频 .mp4 .mov .avi .wmv .mkv .webm .m4v
+#     与 GIF / 静态图等 GDI+ 可解码格式。
+#
+# 示例（把下面这行取消注释并改成你的路径）：
+# ..\assets\my_loop.mp4

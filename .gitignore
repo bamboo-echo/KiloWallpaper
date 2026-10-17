@@ -63,6 +63,12 @@ shot_*.png
 icons_check.png
 win_content.png
 
+# -------- 多语言构建缓存 --------
+zig/.zig-cache/
+zig/zig-out/
+rust/target/
+.workbuddy/
+
 # -------- Python --------
 __pycache__/
 *.pyc

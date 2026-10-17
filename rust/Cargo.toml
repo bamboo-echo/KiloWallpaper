@@ -1,0 +1,64 @@
+# KiloWallpaper — Rust 实现
+#
+# 目标：运行时开销最小（CPU / 内存 / GPU），与 cpp/C 版同一套链路：
+#   DXVA 硬解 → D3D11 VideoProcessor 零拷贝 → DirectComposition → vsync。
+# 二进制体积不作硬约束；windows crate 运行时只链接系统 DLL、COM 直接 vtable 调用，
+# 运行时开销与手写 FFI 无差别（它只影响编译期与 exe 大小）。
+#
+# 产出两个二进制（对齐 cpp/）：
+#   DynamicWallpaper.exe       主壁纸进程
+#   DynamicWallpaperGuard.exe  独立进程名守护进程
+
+[package]
+name = "kilowallpaper"
+version = "1.0.0"
+edition = "2021"
+description = "最小可读的 Windows 桌面嵌入动态壁纸（Rust 实现）"
+license = "MIT"
+
+[lib]
+name = "kilowallpaper"
+path = "src/lib.rs"
+
+[dependencies.windows]
+version = "0.58.0"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_GdiPlus",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D10",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Security",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Variant",
+    "Win32_Storage_FileSystem",
+]
+
+[[bin]]
+name = "DynamicWallpaper"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "DynamicWallpaperGuard"
+path = "src/bin/guard.rs"
+
+# 运行时性能优先：opt-level=3；LTO/单 codegen unit 减少冗余；panic=abort 减少
+# 展开表与运行时分发开销；strip 去掉符号（不影响运行时）。
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
