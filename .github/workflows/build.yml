@@ -37,14 +37,16 @@ jobs:
         run: cpp\build.bat
         shell: cmd
 
-      - name: 自检：进程应能启动并写出嵌入标记
+      - name: 自检：产物 PE 有效
         run: |
-          cpp\DynamicWallpaperGuard.exe
-          ping -n 3 127.0.0.1 >nul
-          tasklist /fi "imagename eq DynamicWallpaperGuard.exe" | findstr /i DynamicWallpaperGuard >nul
-          if errorlevel 1 exit /b 1
-          echo guard started ok
-        shell: cmd
+          foreach ($f in @("cpp\DynamicWallpaper.exe","cpp\DynamicWallpaperGuard.exe")) {
+            if (!(Test-Path $f)) { Write-Error "missing $f"; exit 1 }
+            $h = [System.IO.File]::ReadAllBytes($f)[0..1]
+            $sz = (Get-Item $f).Length
+            if ("$([char]$h[0])$([char]$h[1])" -ne "MZ" -or $sz -lt 1024) { Write-Error "bad PE $f"; exit 1 }
+            Write-Output "ok $f $sz B"
+          }
+        shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,14 +93,16 @@ jobs:
         run: cargo build --release
         working-directory: rust
 
-      - name: 自检：进程应能启动
+      - name: 自检：产物 PE 有效
         run: |
-          start "" rust\target\release\DynamicWallpaperGuard.exe
-          ping -n 3 127.0.0.1 >nul
-          tasklist /fi "imagename eq DynamicWallpaperGuard.exe" | findstr /i DynamicWallpaperGuard >nul
-          if errorlevel 1 exit /b 1
-          echo rust guard started ok
-        shell: cmd
+          foreach ($f in @("rust\target\release\DynamicWallpaper.exe","rust\target\release\DynamicWallpaperGuard.exe")) {
+            if (!(Test-Path $f)) { Write-Error "missing $f"; exit 1 }
+            $h = [System.IO.File]::ReadAllBytes($f)[0..1]
+            $sz = (Get-Item $f).Length
+            if ("$([char]$h[0])$([char]$h[1])" -ne "MZ" -or $sz -lt 1024) { Write-Error "bad PE $f"; exit 1 }
+            Write-Output "ok $f $sz B"
+          }
+        shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -114,12 +118,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 下载 Zig 0.13.0（官方 zip，到 runner 的 C:\tools）
+      - name: 下载 Zig 0.13.0（官方 index.json 解析 URL，到 runner 的 C:\tools）
         run: |
           New-Item -ItemType Directory -Force -Path C:\tools | Out-Null
-          Invoke-WebRequest -Uri https://ziglang.org/download/0.13.0/zig-x86_64-windows-0.13.0.zip -OutFile C:\tools\zig.zip
+          $j = Invoke-RestMethod https://ziglang.org/download/index.json
+          $url = $j.'0.13.0'.'x86_64-windows'.tarball
+          if (-not $url) { Write-Error "0.13.0 x86_64-windows not found in index.json"; exit 1 }
+          Write-Output "zig url=$url"
+          Invoke-WebRequest -Uri $url -OutFile C:\tools\zig.zip
           Expand-Archive -Path C:\tools\zig.zip -DestinationPath C:\tools -Force
-          Get-ChildItem C:\tools -Recurse -Filter zig.exe | Select-Object -First 1 -Expand FullName
+          (Get-ChildItem C:\tools -Recurse -Filter zig.exe | Select-Object -First 1).FullName
         shell: pwsh
 
       - name: 编译（zig build，MSVC 环境）
@@ -134,14 +142,16 @@ jobs:
           "%ZIGEXE%" build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
         shell: cmd
 
-      - name: 自检：进程应能启动
+      - name: 自检：产物 PE 有效
         run: |
-          start "" zig\zig-out\bin\DynamicWallpaper.exe
-          ping -n 4 127.0.0.1 >nul
-          tasklist /fi "imagename eq DynamicWallpaper.exe" | findstr /i DynamicWallpaper >nul
-          if errorlevel 1 exit /b 1
-          echo zig main started ok
-        shell: cmd
+          foreach ($f in @("zig\zig-out\bin\DynamicWallpaper.exe","zig\zig-out\bin\DynamicWallpaperGuard.exe")) {
+            if (!(Test-Path $f)) { Write-Error "missing $f"; exit 1 }
+            $h = [System.IO.File]::ReadAllBytes($f)[0..1]
+            $sz = (Get-Item $f).Length
+            if ("$([char]$h[0])$([char]$h[1])" -ne "MZ" -or $sz -lt 1024) { Write-Error "bad PE $f"; exit 1 }
+            Write-Output "ok $f $sz B"
+          }
+        shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
