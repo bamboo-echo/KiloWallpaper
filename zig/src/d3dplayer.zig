@@ -328,61 +328,74 @@ pub fn d3dInit(hwnd: win.HWND, videoPath: []const win.WCHAR) bool {
         }
     }
 
-    // 3. 解码器：优先 DXVA 硬解，失败退软解
-    g_reader = createReader(true);
-    g_hwDecode = g_reader != null;
-    if (g_reader == null) {
-        g_reader = createReader(false);
+    // 3. 解码器：优先 DXVA 硬解，失败退软解。
+    // 二分探针：KW_NO_READER=1 时跳过 MF 解码器（硬编码 2560x1440 NV12），
+    // 其余 D3D 资源照常构建，用于定位 80.5MB 大池是否来自 MF。
+    var noReaderBuf: [8]u8 = undefined;
+    const skipReader = win.c.GetEnvironmentVariableA("KW_NO_READER", &noReaderBuf, 8) > 0;
+    if (skipReader) {
+        g_vw = 2560;
+        g_vh = 1440;
+        g_upIsNv12 = true;
+        g_frameMs = 41;
+        g_hwDecode = false;
+        dpLog("probe: MF reader skipped (KW_NO_READER=1)", .{});
+    } else {
+        g_reader = createReader(true);
+        g_hwDecode = g_reader != null;
         if (g_reader == null) {
-            dpLog("reader failed", .{});
+            g_reader = createReader(false);
+            if (g_reader == null) {
+                dpLog("reader failed", .{});
+                d3dShutdown();
+                return false;
+            }
+        }
+
+        // 4. 读输出格式信息：尺寸/帧率/子类型/时长
+        var cur: ?*win.c.IMFMediaType = null;
+        hr = g_reader.?.*.lpVtbl.*.GetCurrentMediaType.?(g_reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_FIRST_VIDEO_STREAM))), &cur);
+        if (hr != win.S_OK or cur == null) {
+            dpLog("cur type failed hr=0x{X}", .{hr});
             d3dShutdown();
             return false;
         }
-    }
-
-    // 4. 读输出格式信息：尺寸/帧率/子类型/时长
-    var cur: ?*win.c.IMFMediaType = null;
-    hr = g_reader.?.*.lpVtbl.*.GetCurrentMediaType.?(g_reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_FIRST_VIDEO_STREAM))), &cur);
-    if (hr != win.S_OK or cur == null) {
-        dpLog("cur type failed hr=0x{X}", .{hr});
-        d3dShutdown();
-        return false;
-    }
-    var num: win.UINT = 0;
-    var den: win.UINT = 1;
-    var attrVal: u64 = 0;
-    _ = cur.?.*.lpVtbl.*.GetUINT64.?(cur, &win.c.MF_MT_FRAME_SIZE, &attrVal);
-    g_vw = @intCast(attrVal >> 32);
-    g_vh = @intCast(attrVal & 0xFFFF_FFFF);
-    _ = cur.?.*.lpVtbl.*.GetUINT64.?(cur, &win.c.MF_MT_FRAME_RATE, &attrVal);
-    num = @intCast(attrVal >> 32);
-    den = @intCast(attrVal & 0xFFFF_FFFF);
-    var sub: win.GUID = std.mem.zeroes(win.GUID);
-    _ = cur.?.*.lpVtbl.*.GetGUID.?(cur, &win.c.MF_MT_SUBTYPE, &sub);
-    release(cur);
-    var dur: win.c.PROPVARIANT = std.mem.zeroes(win.c.PROPVARIANT);
-    win.PropVariantInit(&dur);
-    const durRaw: *PVLayout = @ptrCast(&dur);
-    if (g_reader.?.*.lpVtbl.*.GetPresentationAttribute.?(g_reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_MEDIASOURCE))),
-        &win.c.MF_PD_DURATION, &dur) == win.S_OK and durRaw.vt == @as(u16, @intCast(win.c.VT_I8)))
-    {
-        g_duration = durRaw.hVal;
-    }
-    win.PropVariantClear(&dur);
-    if (g_vw == 0 or g_vh == 0) {
-        dpLog("size failed", .{});
-        d3dShutdown();
-        return false;
-    }
-    g_upIsNv12 = (sub.Data1 == win.c.MFVideoFormat_NV12.Data1 and
-        sub.Data2 == win.c.MFVideoFormat_NV12.Data2 and
-        sub.Data3 == win.c.MFVideoFormat_NV12.Data3 and
-        std.mem.eql(u8, &sub.Data4, &win.c.MFVideoFormat_NV12.Data4));
-    if (num > 0 and den > 0) {
-        var ms: win.UINT = @intCast((1000 * den) / num);
-        if (ms < 10) ms = 10;
-        if (ms > 100) ms = 100;
-        g_frameMs = ms;
+        var num: win.UINT = 0;
+        var den: win.UINT = 1;
+        var attrVal: u64 = 0;
+        _ = cur.?.*.lpVtbl.*.GetUINT64.?(cur, &win.c.MF_MT_FRAME_SIZE, &attrVal);
+        g_vw = @intCast(attrVal >> 32);
+        g_vh = @intCast(attrVal & 0xFFFF_FFFF);
+        _ = cur.?.*.lpVtbl.*.GetUINT64.?(cur, &win.c.MF_MT_FRAME_RATE, &attrVal);
+        num = @intCast(attrVal >> 32);
+        den = @intCast(attrVal & 0xFFFF_FFFF);
+        var sub: win.GUID = std.mem.zeroes(win.GUID);
+        _ = cur.?.*.lpVtbl.*.GetGUID.?(cur, &win.c.MF_MT_SUBTYPE, &sub);
+        release(cur);
+        var dur: win.c.PROPVARIANT = std.mem.zeroes(win.c.PROPVARIANT);
+        win.PropVariantInit(&dur);
+        const durRaw: *PVLayout = @ptrCast(&dur);
+        if (g_reader.?.*.lpVtbl.*.GetPresentationAttribute.?(g_reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_MEDIASOURCE))),
+            &win.c.MF_PD_DURATION, &dur) == win.S_OK and durRaw.vt == @as(u16, @intCast(win.c.VT_I8)))
+        {
+            g_duration = durRaw.hVal;
+        }
+        win.PropVariantClear(&dur);
+        if (g_vw == 0 or g_vh == 0) {
+            dpLog("size failed", .{});
+            d3dShutdown();
+            return false;
+        }
+        g_upIsNv12 = (sub.Data1 == win.c.MFVideoFormat_NV12.Data1 and
+            sub.Data2 == win.c.MFVideoFormat_NV12.Data2 and
+            sub.Data3 == win.c.MFVideoFormat_NV12.Data3 and
+            std.mem.eql(u8, &sub.Data4, &win.c.MFVideoFormat_NV12.Data4));
+        if (num > 0 and den > 0) {
+            var ms: win.UINT = @intCast((1000 * den) / num);
+            if (ms < 10) ms = 10;
+            if (ms > 100) ms = 100;
+            g_frameMs = ms;
+        }
     }
 
     // 5. 上传纹理（NV12 或 RGB32）
