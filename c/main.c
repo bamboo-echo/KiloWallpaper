@@ -5,6 +5,7 @@
 // 编译：build.bat（纯 C，cl /O2）
 #include "wallpaper.h"
 #include "d3dplayer.h"
+#include <psapi.h>     // GetProcessMemoryInfo / PROCESS_MEMORY_COUNTERS_EX / GetProcessHandleCount
 #include <stdlib.h>   // _wtoi / malloc / free
 #include <wchar.h>    // wcsrchr / wcscmp / wcsstr / wcsncpy / _wcsicmp / _wcsnicmp
 #include <string.h>   // memmove / memcpy / wcslen
@@ -34,6 +35,50 @@ static void GetExeDir(wchar_t* out) {
     wchar_t* slash = wcsrchr(exe, L'\\');
     if (slash) *slash = L'\0';
     wcscpy(out, exe);
+}
+
+// ---------- 资源快照（排查内存/句柄泄漏） ----------
+static void LogFail(const wchar_t* msg, const wchar_t* path, HRESULT hr);  // 前向声明
+// 每 60s 往 debug.log 写一行：工作集/私有提交/峰值/句柄/GDI/USER 对象数。
+// 泄漏排查法：盯 commit 与 handles 两条线——private 持续上涨不停=堆泄漏，
+// handles/GDI/USER 持续上涨=内核对象泄漏（COM 未 Release 等）。
+// 可用 KW_RES_LOG_MS 环境变量改间隔（0=关闭）。
+static void LogResourceSnapshot(void) {
+    static DWORD s_last = 0;
+    static DWORD s_start = 0;
+    static int s_init = 0;
+    static DWORD s_interval = 60000;
+    if (!s_init) {
+        s_init = 1;
+        s_start = GetTickCount();   // 进程内起点，用于算运行秒数
+        wchar_t buf[16] = {0};
+        if (GetEnvironmentVariableW(L"KW_RES_LOG_MS", buf, 16) > 0) {
+            int v = _wtoi(buf);
+            s_interval = (v >= 0) ? (DWORD)v : 0;
+        }
+    }
+    if (s_interval == 0) return;
+    DWORD now = GetTickCount();
+    if (s_last && now - s_last < s_interval) return;
+    s_last = now;
+
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    pmc.cb = sizeof(pmc);
+    DWORD handles = 0;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) return;
+    GetProcessHandleCount(GetCurrentProcess(), &handles);
+    DWORD gdi = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    DWORD user = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+
+    wchar_t line[256];
+    _snwprintf(line, 256,
+        L"[res] uptime=%lus ws=%uMB commit=%uMB peakws=%uMB handles=%lu gdi=%lu user=%lu",
+        (unsigned long)((now - s_start) / 1000),
+        (unsigned)(pmc.WorkingSetSize >> 20),
+        (unsigned)(pmc.PrivateUsage >> 20),
+        (unsigned)(pmc.PeakWorkingSetSize >> 20),
+        (unsigned long)handles, (unsigned long)gdi, (unsigned long)user);
+    LogFail(line, NULL, S_OK);
 }
 
 static void LogFail(const wchar_t* msg, const wchar_t* path, HRESULT hr) {
@@ -203,6 +248,7 @@ static void WatchdogTick(void) {
         EnsureWallpaperZOrder(g_hwnd);
     }
     CheckMediaReload();   // wallpaper.txt 改动 → 免重启换素材
+    LogResourceSnapshot(); // 周期资源快照（排查内存/句柄泄漏）
     EnsureGuardAlive();   // 守护进程死了就拉起（主进程保持自愈闭环）
 }
 
