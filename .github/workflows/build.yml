@@ -31,7 +31,7 @@ jobs:
     name: 编译 cpp
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 编译（cpp\build.bat）
         run: cpp\build.bat
@@ -48,7 +48,7 @@ jobs:
           }
         shell: pwsh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bin-cpp
           path: |
@@ -60,13 +60,13 @@ jobs:
     name: 编译 c
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 编译（c\build.bat）
         run: c\build.bat
         shell: cmd
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bin-c
           path: |
@@ -78,7 +78,7 @@ jobs:
     name: 编译 rust
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 缓存 cargo
         uses: actions/cache@v4
@@ -104,7 +104,7 @@ jobs:
           }
         shell: pwsh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bin-rust
           path: |
@@ -116,7 +116,7 @@ jobs:
     name: 编译 zig
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 下载 Zig 0.13.0（官方 index.json 解析 URL，到 runner 的 C:\tools）
         run: |
@@ -153,7 +153,7 @@ jobs:
           }
         shell: pwsh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: bin-zig
           path: |
@@ -168,7 +168,7 @@ jobs:
     needs: build-cpp
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # verify_claims.py 校验的是 cpp 的行数与二进制体积，需要产物在场
       - name: 编译（供校验）
@@ -187,10 +187,10 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 下载全部产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
