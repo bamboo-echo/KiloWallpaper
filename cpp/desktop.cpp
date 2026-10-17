@@ -16,6 +16,25 @@ extern HWND g_hwnd;
 // 当前嵌入的父窗口（main.cpp 看门狗使用）
 HWND g_parent = nullptr;
 
+// 当前生效的嵌入策略名（如 "progman-layered" / "workerw-child" / "toplevel"）。
+// 嵌入成功后写入 wallpaper.embed 标记文件，供 tools/check_embed.py 与用户自查
+// 「我这台机器到底走的是哪条路径」——这是跨 Windows 版本（24H2+ / pre-24H2 经典结构）
+// 差异唯一可靠的运行时证据，只看 debug.log 会被日志限频/清理掩盖。
+static const wchar_t* g_embedStrategy = nullptr;
+
+static void MarkEmbedStrategy(const wchar_t* name) {
+    g_embedStrategy = name;
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir = exe;
+    size_t pos = dir.find_last_of(L'\\');
+    if (pos != std::wstring::npos) dir = dir.substr(0, pos + 1);
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, (dir + L"wallpaper.embed").c_str(), L"w") != 0 || !f) return;
+    fwprintf(f, L"%s\n", name);
+    fclose(f);
+}
+
 // Win11 24H2+/25H2 "raised desktop" 方案的 z 序锚点：
 // Progman 子级 z(高→低) = [SHELLDLL_DefView(图标层, LAYERED), WorkerW(系统壁纸)]
 // 我们的壁纸窗口插到 DefView 之后，且必须把系统 WorkerW 压到我们之下
@@ -320,6 +339,7 @@ bool EmbedOrFallback(HWND hwnd) {
             // ★ 双向 z 锚定（EnsureWallpaperZOrder 内部完成）
             EnsureWallpaperZOrder(hwnd);
             RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            MarkEmbedStrategy(L"progman-layered");
             EmbedLog(L"embed: progman-layered anchor", defView);
             return true;
         }
@@ -337,12 +357,14 @@ bool EmbedOrFallback(HWND hwnd) {
         if (AttachTo(hwnd, workerW)) {
             g_wpDefView = nullptr;
             g_wpWorkerW = nullptr;
+            MarkEmbedStrategy(L"workerw-child");
             EmbedLog(L"embed: classic workerw-child", workerW);
             return true;
         }
     }
 
-    // ---- 兜底：顶层窗口压底（已知会盖图标，仅保底不黑屏）
+    // ---- 兜底：顶层窗口压底（已知会盖图标，仅保底不黑屏）----
+    MarkEmbedStrategy(L"toplevel-fallback");
     EmbedLog(L"embed: toplevel fallback", progman);
     ApplyFallbackTopLevel(hwnd);
     return true;

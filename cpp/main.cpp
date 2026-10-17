@@ -19,6 +19,16 @@ int g_winW = 0, g_winH = 0;
 UINT g_taskbarCreated = 0;
 bool g_isVideo = false;
 
+// ---- 热重载状态（改 wallpaper.txt 即时换壁纸，不必重启）----
+// g_curMedia  : 当前实际加载的素材全路径，用于判断配置是否变了
+// g_lockedMedia: 非空 = 启动时用命令行指定了素材 → 命令行优先，不响应配置变更
+static std::wstring g_curMedia;
+static std::wstring g_lockedMedia;
+// 失败退避：某次重载失败后记住它，配置内容没再变就不再重试（否则看门狗每 3 秒
+// 重试一次同一个坏文件，debug.log 被刷满、CPU 空转）。配置一旦改动（路径或文本
+// 变化）就重新尝试。
+static std::wstring g_failedMedia;
+
 static std::wstring GetExeDir() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -65,7 +75,17 @@ static void AdvanceFrame() {
     }
 }
 
+// 按当前媒体类型重启帧定时器（启动首帧与热重载共用同一套规则）
+static void StartFrameTimer() {
+    KillTimer(g_host, TIMER_FRAME);
+    UINT delay = 33;
+    if (g_isVideo) delay = 16;                       // 视频：首帧尽快出
+    else if (g_frameCount > 0) delay = g_delays[0] ? g_delays[0] : 100;
+    SetTimer(g_host, TIMER_FRAME, delay, nullptr);
+}
+
 static HWND CreateWallpaperWindow();
+static void CheckMediaReload();
 
 // ★ 优雅关闭标志：桌面「关闭壁纸.bat」改为写本文件（而非 taskkill /f）。
 // 看门狗检测到 → 正常退出（退出码 0 不触发重启管理器恢复）→ 壁纸关闭。
@@ -179,6 +199,7 @@ static void WatchdogTick() {
         // 系统壁纸 WorkerW 之上（EnsureWallpaperZOrder 内部按父窗口类型处理）。
         EnsureWallpaperZOrder(g_hwnd);
     }
+    CheckMediaReload();     // wallpaper.txt 改动 → 免重启换素材
     EnsureGuardAlive();   // 守护进程死了就拉起（主进程保持自愈闭环）
 }
 
@@ -345,6 +366,52 @@ static std::wstring ResolveMediaPath(LPWSTR cmdLine) {
     return s;
 }
 
+// ---- 热重载：改 wallpaper.txt 即时换素材，不必关闭壁纸再重启 ----
+// 三个关键设计：
+//  1) 比较「解析后的完整路径」而不是文件时间戳：只关心用哪个素材，时间戳会被
+//     复制文件、同秒多次写、编辑器保存方式搅乱，产生大量假变更。
+//  2) ResolveMediaPath 对「文件不存在 / 非 UTF-8 / 空文件」一律返回空串，
+//     所以记事本"先清空再写"这种编辑中间态读到空串会被忽略，下一拍（3 秒内）重试。
+//  3) 新素材加载失败 → 自动回滚到旧素材，绝不停在黑屏上。
+static bool LoadMediaInto(const std::wstring& path) {
+    bool isVid = IsVideoFile(path);
+    if (isVid != g_isVideo) {
+        // 类型变了（视频↔GIF/图片）：先彻底拆掉另一条链路，
+        // 否则两条链路会同时持有同一个窗口 / D3D 设备。
+        if (g_isVideo) D3DShutdown();
+        else ReleaseBackbuffer();
+    }
+    if (isVid) return D3DInit(g_hwnd, path.c_str());   // D3DInit 内部先 D3DShutdown
+    return LoadGif(path);                                // LoadGif 内部先释放旧 Image
+}
+
+static void CheckMediaReload() {
+    if (!g_lockedMedia.empty()) return;   // 命令行指定过素材 → 命令行优先，忽略配置变更
+    if (!IsWindow(g_hwnd)) return;
+    std::wstring want = ResolveMediaPath(nullptr);
+    if (want.empty() || want == g_curMedia) return;   // 空=编辑中/无效；相同=没变
+    if (want == g_failedMedia) return;                 // 这个路径刚失败过 → 退避等待
+
+    const std::wstring old = g_curMedia;
+    if (LoadMediaInto(want)) {
+        g_curMedia = want;
+        g_failedMedia.clear();
+        g_isVideo = IsVideoFile(want);
+        LogFail(L"reload-ok", want, S_OK);
+        StartFrameTimer();
+        FitToParentOrMonitor(g_hwnd);
+        InvalidateRect(g_hwnd, nullptr, FALSE);
+        EnsureWallpaperZOrder(g_hwnd);
+        return;
+    }
+
+    // 加载失败：写日志并回滚到旧素材（g_isVideo 保持调用前的值，回滚方向正确）
+    LogFail(L"reload-failed", want, g_lastHr ? g_lastHr : E_FAIL);
+    g_failedMedia = want;                    // 退避：同一坏路径不再反复重试
+    if (!old.empty()) LoadMediaInto(old);
+    StartFrameTimer();
+}
+
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int) {
     g_hInst = hInst;
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"DynamicWallpaper_SingleInstance");
@@ -383,6 +450,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR cmdLine, int) {
     std::wstring media = ResolveMediaPath(cmdLine);
     // 根据扩展名判定是视频还是 GIF/图片
     g_isVideo = IsVideoFile(media);
+    g_curMedia = media;
+    // 命令行指定了素材时锁死：README 的「命令行优先」语义，热重载只认配置文件。
+    // 也就是说 `DynamicWallpaper.exe "D:\x.mp4"` 之后改 wallpaper.txt 不生效。
+    if (cmdLine) {
+        if (!TrimPath(cmdLine).empty()) g_lockedMedia = media;
+    }
 
     if (!g_isVideo && !LoadGif(media)) {
         LogFail(L"load", media, g_lastHr ? g_lastHr : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));

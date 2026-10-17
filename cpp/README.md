@@ -1,7 +1,7 @@
 # KiloWallpaper — C++ 参考实现
 
 Win32 原生 API 手写，**零第三方依赖**（只用 Windows SDK 与系统 DLL），
-8 个文件 **1766 行**，编译出两个二进制共 **92.5 KB**。
+8 个文件 **1872 行**，编译出两个二进制共 **97.5 KB**。
 
 > 这份实现的目的不是「功能最多」，而是「**最短的可读路径**跑通动态壁纸的全部难点」：
 > DXVA 硬解、DirectComposition 零拷贝呈现、Explorer 桌面嵌入、图标层 z 序锚定、双进程守护。
@@ -12,15 +12,15 @@ Win32 原生 API 手写，**零第三方依赖**（只用 Windows SDK 与系统 
 
 | 文件 | 行数 | 职责 |
 | --- | ---: | --- |
-| `main.cpp` | 459 | 入口、窗口与消息循环、看门狗、渲染调度、配置解析、单实例互斥 |
-| `d3dplayer.cpp` | 581 | 视频链路：Media Foundation `SourceReader` + DXVA 硬解 + D3D11 VideoProcessor + DirectComposition 呈现 + 无缝循环 |
-| `desktop.cpp` | 391 | 桌面嵌入：Progman/WorkerW 结构探测、双向 z 序锚定、图标层打穿与恢复、多级兜底 |
-| `guard.cpp` | 124 | 独立进程名守护程序（保活 + 优雅退出响应） |
+| `main.cpp` | 538 | 入口、窗口与消息循环、看门狗、渲染调度、配置解析与**热重载**、单实例互斥 |
+| `d3dplayer.cpp` | 607 | 视频链路：Media Foundation `SourceReader` + DXVA 硬解 + D3D11 VideoProcessor + DirectComposition 呈现 + 无缝循环 |
+| `desktop.cpp` | 371 | 桌面嵌入：Progman/WorkerW 结构探测、双向 z 序锚定、图标层打穿与恢复、多级兜底、嵌入策略标记 |
+| `guard.cpp` | 140 | 独立进程名守护程序（保活 + 优雅退出响应） |
 | `media.cpp` | 57 | GIF / 静态图解码（GDI+），帧延时表 |
-| `render.cpp` | 52 | GIF 帧绘制与双缓冲后备缓冲管理 |
-| `wallpaper.h` | 76 | 跨模块共享声明 |
-| `d3dplayer.h` | 26 | 视频播放器对外接口 |
-| **合计** | **1766** | |
+| `render.cpp` | 63 | GIF 帧绘制与双缓冲后备缓冲管理 |
+| `wallpaper.h` | 73 | 跨模块共享声明 |
+| `d3dplayer.h` | 23 | 视频播放器对外接口 |
+| **合计** | **1872** | |
 
 辅助脚本：`build.bat`（编译）、`setup.bat`（安装并启动）、`uninstall.bat`（卸载）、
 `关闭壁纸.bat`（优雅关闭）。
@@ -68,13 +68,16 @@ Progman  (WS_EX_NOREDIRECTIONBITMAP)
 - **嵌入前发 `0x052C` 给 Progman**，强制进入 raised 状态。开机或 explorer 重启后桌面可能退化回未 raised 状态（Progman 下只有 DefView、没有 WorkerW），此时系统壁纸由 DWM 直绘在最底层，会把我们的窗口盖住。看门狗每 3 秒校准一次 z 序，发现 WorkerW 消失时会重发 `0x052C` 自愈（5 秒限频）。
 - **DPI 感知必须在建窗前设为 `PER_MONITOR_AWARE_V2`**。进程若不是 Per-Monitor V2，跨 DPI 上下文 `SetParent` 进 Explorer 后 DWM 会拒绝合成窗口内容 → **纯黑**（已实测复现，见 `main.cpp` 的 `SetProcessDpiAwarenessContext` 调用）。
 
-多级兜底（按顺序尝试，任一成功即止）：
+多级兜底（按顺序尝试，任一成功即止）。**注意三者实测覆盖度不同**：
 
-| 顺序 | 方案 | 说明 |
-| --- | --- | --- |
-| 1 | Progman 子窗口 + 双向 z 锚定 | 24H2+/25H2 主路径 |
-| 2 | 图标层 WorkerW 之后的空 WorkerW 子窗口 | pre-24H2 / Win10 经典结构 |
-| 3 | 顶层窗口压到底 | 保底不黑屏（已知会盖住图标） |
+| 顺序 | 策略名 | 方案 | 验证状态 |
+| --- | --- | --- | --- |
+| 1 | `progman-layered` | Progman 子窗口 + 双向 z 锚定 | ✅ 已实测（Win11 24H2+/25H2 主路径） |
+| 2 | `workerw-child` | 图标层 WorkerW 之后的空 WorkerW 子窗口 | ⚠️ 未在真机验证（pre-24H2 / Win10 经典结构，按社区方案实现） |
+| 3 | `toplevel-fallback` | 顶层窗口压到底 | ⚠️ 未验证，且**已知会盖住图标**，仅保底不黑屏 |
+
+当前生效的策略名写在 exe 同目录的 `wallpaper.embed` 里，
+`tools/check_embed.py` 第二行会打印它——排查跨版本问题时先看这个。
 
 ### 2. 关于图标层：本实现**零修改**
 
@@ -133,7 +136,26 @@ SetCurrentPosition(0) 失败 → seek(1) 强制真 seek → 仍然 EOS 才重建
 GDI+ 解码 + 读取每帧延时属性，`render.cpp` 用内存 DC 双缓冲按 **cover** 缩放绘制。
 GIF 与视频的调度共用 `main.cpp` 里的 `SetTimer` 帧定时器。
 
-### 5. 双进程守护（`guard.cpp`）
+### 5. 配置热重载（`main.cpp`）
+
+看门狗每 3 秒调一次 `CheckMediaReload()`：重新解析 `wallpaper.txt`，
+**比较解析后的完整路径**（而不是文件时间戳——时间戳会被复制文件、同秒多次写、
+编辑器保存方式搅乱，产生大量假变更）。路径变了才重载。
+
+三个边界处理，都是实测踩出来的：
+
+- **编辑中间态**：记事本「先清空再写」时 `ResolveMediaPath` 读到空串或坏路径，
+  一律返回空 → 本拍跳过，等下一拍。不会把壁纸搞没。
+- **加载失败回滚**：新素材打不开 → 日志写一行 `reload-failed`，
+  立刻把旧素材重新装回去。**绝不停在黑屏上**。
+- **失败退避**：同一个坏路径失败后记进 `g_failedMedia`，配置内容不变就不再重试。
+  否则看门狗每 3 秒重试一次，日志被刷满、CPU 空转（实测修复前 16 秒内重复失败 3 次以上）。
+
+视频 ↔ GIF 切换时先 `D3DShutdown()` 拆掉另一条链路再装新的，
+避免两条链路同时持有同一个窗口 / D3D 设备。
+`D3DInit` 内部先调 `D3DShutdown()`，所以重载视频本质就是「重新 init 一次」。
+
+### 6. 双进程守护（`guard.cpp`）
 
 守护进程**故意用另一个进程名** `DynamicWallpaperGuard.exe`：优化软件按进程名批量清理时只会命中
 `DynamicWallpaper.exe`，守护存活即可在 1 秒内拉起主进程。
@@ -143,7 +165,7 @@ GIF 与视频的调度共用 `main.cpp` 里的 `SetTimer` 帧定时器。
 
 要让守护**不复活**，就必须走优雅退出握手（下表）。
 
-### 6. 进程间协议：全在一个目录里的标记文件
+### 7. 进程间协议：全在一个目录里的标记文件
 
 所有标记文件都用 `GetModuleFileNameW` → 取 exe 所在目录定位，**因此整个目录随便搬到哪都不会失联**。
 
@@ -155,6 +177,7 @@ GIF 与视频的调度共用 `main.cpp` 里的 `SetTimer` 帧定时器。
 | `wallpaper.ok` | 主进程 | 初始化成功标记；守护**只有看到它才保活** |
 | `wallpaper.quit` | `关闭壁纸.bat` | 关闭请求，由主进程消费后删除 |
 | `wallpaper.graceful` | 主进程 | 优雅退出标记；守护见之即退，**不再复活** |
+| `wallpaper.embed` | 主进程（desktop.cpp） | 当前生效的嵌入策略名（见上表），供诊断工具与用户自查 |
 | `debug.log` | 各模块 | 追加式日志，同一目录 |
 
 优雅关闭的完整链路：
@@ -174,12 +197,19 @@ GIF 与视频的调度共用 `main.cpp` 里的 `SetTimer` 帧定时器。
 
 | 现象 | 先看什么 |
 | --- | --- |
-| 壁纸不显示 / 图标被盖 | **在仓库根目录**运行 `python tools\check_embed.py`（打印完整窗口层级、父子关系、扩展样式、取样像素） |
+| 壁纸不显示 / 图标被盖 | **在仓库根目录**运行 `python tools\check_embed.py`（打印完整窗口层级、父子关系、扩展样式、当前嵌入策略、取样像素） |
+| 改了 `wallpaper.txt` 没反应 | ① 是不是用**命令行**启动的（命令行优先，热重载不生效）；② 等够 3 秒；③ 看 `debug.log` 有没有 `reload-failed` |
+| 换素材后黑屏 | 不该发生——失败会自动回滚。若真黑了，看 `debug.log` 的 `reload-failed` 行确认原因 |
 | 桌面图标不见了 | **在仓库根目录**运行 `python tools\restore_desktop.py`（注意：它主动改写图标层，非回滚，见 tools/README.md） |
 | 壁纸消失、只剩系统默认壁纸 | 大概率是桌面退化回未 raised 状态，看 `debug.log` 里的 `[embed] zorder: anchor FAILED` |
-| 启动即退出 | `debug.log` 里的 `path=` / `hr=` 行；多半是 `wallpaper.txt` 第一行的路径不存在 |
+| 启动即退出 | `debug.log` 里的 `path=` / `hr=` 行；多半是 `wallpaper.txt` 第一行的路径不存在或不是合法素材 |
 | 关不掉 | 你用的是 `taskkill`。用 `关闭壁纸.bat` |
 | 想确认真的在硬解 | 任务管理器 → 性能 → GPU，看 `Video Decode` 引擎是否有占用（软解不会占它） |
+
+> `tools/check_embed.py` 对 **GDI 路径（GIF/图片）** 的 `PrintWindow` 抓屏会显示全黑：
+> 跨进程子窗口的 GDI 内容不会被 `PrintWindow` 捕获（`WndProc` 没有处理 `WM_PRINTCLIENT`），
+> 而 D3D/DirectComposition 内容靠 `PW_RENDERFULLCONTENT` 可以正常抓到。
+> **这是探针的限制，不是壁纸没画出来**——用 GIF 时请以肉眼或整屏截图为准。
 
 > `tools/` 下的脚本一律在**仓库根目录**执行（它们是全语言共用的诊断工具，
 > 不在 `cpp/` 里）；`tools/README.md` 有完整说明。
@@ -190,6 +220,11 @@ GIF 与视频的调度共用 `main.cpp` 里的 `SetTimer` 帧定时器。
 
 - 只铺主显示器；多显示器需要把 `GetPrimaryMonitorRect()` 换成按 `MonitorEnumProc` 遍历。
 - 无托盘、无设置界面、无音频、无播放列表。
+- **嵌入路径 2 / 3（`workerw-child` / `toplevel-fallback`）没有在真机上验证过**：
+  本机只有 Win11 build 26300，走的是路径 1。Win10 用户第一次跑请先看
+  `wallpaper.embed` 里的策略名；如果是路径 3（顶层兜底）说明**桌面图标会被盖住**，
+  属于已知缺陷，不是你的系统问题。
+- `tools/check_embed.py` 抓不到 GDI（GIF/图片）内容的像素，见上面排障表末尾的说明。
 - `guard.cpp` 的 `IsOurProcess()` 在 `QueryFullProcessImageName` 失败时按「存活」处理（保守策略，
   避免误判把还在跑的主进程再拉起一次）。
 - 守护进程在「主进程不在且 `wallpaper.ok` 存在时」只补拉一次：若拉起后下一拍（1 秒）

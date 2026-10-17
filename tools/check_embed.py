@@ -17,6 +17,7 @@ Requires: nothing (Python standard library only).
 Usage:    python tools/check_embed.py
 """
 import ctypes
+import os
 from ctypes import wintypes
 
 u = ctypes.windll.user32
@@ -181,7 +182,51 @@ def render_probe(h):
     render_stats(h)
 
 
+# RtlGetVersion lives in ntdll; it reports the true build even on a
+# version-lied Windows 10/11. Returns (major, minor, build).
+def os_build():
+    try:
+        class RTL_OSVERSIONINFOW(ctypes.Structure):
+            _fields_ = [("dwOSVersionInfoSize", ctypes.c_uint32),
+                        ("dwMajorVersion", ctypes.c_uint32),
+                        ("dwMinorVersion", ctypes.c_uint32),
+                        ("dwBuildNumber", ctypes.c_uint32),
+                        ("dwPlatformId", ctypes.c_uint32),
+                        ("szCSDVersion", ctypes.c_wchar * 128)]
+        info = RTL_OSVERSIONINFOW()
+        info.dwOSVersionInfoSize = ctypes.sizeof(RTL_OSVERSIONINFOW)
+        fn = ctypes.windll.ntdll.RtlGetVersion
+        fn(ctypes.byref(info))
+        return info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber
+    except Exception:
+        return None
+
+
+def read_strategy():
+    """Read the wallpaper.embed marker the app writes on every successful embed."""
+    exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cpp")
+    path = os.path.normpath(os.path.join(exe, "wallpaper.embed"))
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 def main():
+    b = os_build()
+    if b:
+        major, minor, build = b
+        # Windows 11 keeps reporting major=10/minor=0 via RtlGetVersion;
+        # the build number is what actually distinguishes it (>=22000).
+        name = "Windows 11" if major == 10 and build >= 22000 else \
+               "Windows {0}".format(major)
+        print("{0} build {1}".format(name, build))
+    else:
+        print("Windows build: unknown")
+    strat = read_strategy()
+    print("active embed strategy:", strat or "(no wallpaper.embed marker)")
+
     prog = FindWindow("Progman", None)
     print("Progman", hex(prog) if prog else 0)
     if not prog:
