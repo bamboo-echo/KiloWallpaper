@@ -35,6 +35,22 @@ static HWND g_wpWorkerW = NULL;
 // 壁纸能显示，靠的是 z 序（壁纸窗口排在 SHELLDLL_DefView 之后见
 // EnsureWallpaperZOrder）而不是改图标层属性。
 
+// 写入今次生效的嵌入策略名（对齐 cpp 的 wallpaper.embed），供 tools/check_embed.py
+// 与用户自查「这台机器到底走的是哪条路径」——跨 Windows 版本的唯一运行时证据。
+static void WriteEmbedMarker(const wchar_t* name) {
+    wchar_t exe[MAX_PATH] = {0};
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (slash) *slash = L'\0';
+    wchar_t path[MAX_PATH + 20];
+    int n = _snwprintf(path, MAX_PATH + 20, L"%s\\wallpaper.embed", exe);
+    if (n < 0) path[MAX_PATH + 19] = L'\0';
+    FILE* f = _wfopen(path, L"w");
+    if (!f) return;
+    fwprintf(f, L"%s\n", name);
+    fclose(f);
+}
+
 static void EmbedLog(const wchar_t* msg, HWND w) {
     wchar_t exe[MAX_PATH] = {0};
     GetModuleFileNameW(NULL, exe, MAX_PATH);
@@ -324,6 +340,7 @@ int EmbedOrFallback(HWND hwnd) {
             EnsureWallpaperZOrder(hwnd);
             RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
             EmbedLog(L"embed: progman-layered anchor", defView);
+            WriteEmbedMarker(L"progman-layered");
             return 1;
         }
         EmbedLog(L"embed: setparent failed", progman);
@@ -341,12 +358,14 @@ int EmbedOrFallback(HWND hwnd) {
             g_wpDefView = NULL;
             g_wpWorkerW = NULL;
             EmbedLog(L"embed: classic workerw-child", workerW);
+            WriteEmbedMarker(L"workerw-child");
             return 1;
         }
     }
 
     // ---- 兜底：顶层窗口压底（已知会盖图标，仅保底不黑屏）
     EmbedLog(L"embed: toplevel fallback", progman);
+    WriteEmbedMarker(L"toplevel-fallback");
     ApplyFallbackTopLevel(hwnd);
     return 1;
 }

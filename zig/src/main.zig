@@ -14,6 +14,11 @@ const d3d = @import("d3dplayer.zig");
 
 var g_hInst: win.HINSTANCE = undefined;
 
+// 配置热重载（对齐 cpp/main.cpp）：wallpaper.txt 改动 3s 内换素材，失败回滚退避。
+var g_curMedia: [win.c.MAX_PATH:0]u16 = std.mem.zeroes([win.c.MAX_PATH:0]u16);
+var g_failedMedia: [win.c.MAX_PATH:0]u16 = std.mem.zeroes([win.c.MAX_PATH:0]u16);
+var g_lockedMedia: [win.c.MAX_PATH:0]u16 = std.mem.zeroes([win.c.MAX_PATH:0]u16);
+
 // ---------- 小工具 ----------
 fn asciiW(comptime s: []const u8) [*:0]const win.WCHAR {
     const lit: [s.len:0]win.WCHAR = comptime blk: {
@@ -169,6 +174,71 @@ fn watchdogTick() void {
         desktop.ensureWallpaperZOrder(hwnd);
     }
     ensureGuardAlive();
+    checkMediaReload(std.heap.page_allocator);
+}
+
+// ---------- 配置热重载 ----------
+fn mSlice(m: *const [win.c.MAX_PATH:0]u16) []const u16 {
+    const n = std.mem.indexOfScalar(u16, m, 0) orelse win.c.MAX_PATH;
+    return m[0..n];
+}
+
+fn copyW(dst: *[win.c.MAX_PATH:0]u16, src: []const u16) void {
+    @memset(dst, 0);
+    const n = @min(src.len, win.c.MAX_PATH - 1);
+    @memcpy(dst[0..n], src[0..n]);
+    dst[n] = 0;
+}
+
+fn startFrameTimer() void {
+    var delay: win.UINT = 33;
+    if (common.g_isVideo) {
+        delay = 16;
+    } else if (media.g_frameCount > 0) {
+        delay = if (media.g_delays[0] != 0) media.g_delays[0] else 100;
+    }
+    if (common.g_host) |h| _ = win.c.SetTimer(h, common.TIMER_FRAME, delay, null);
+}
+
+fn loadMediaInto(path: [:0]const win.WCHAR) bool {
+    const isVid = media.isVideoFile(path);
+    if (isVid) {
+        if (!d3d.d3dInit(common.g_hwnd.?, path)) return false;
+    } else {
+        d3d.d3dShutdown();
+        if (!media.loadGif(path)) return false;
+    }
+    common.g_isVideo = isVid;
+    return true;
+}
+
+// 命令行 > 配置；同路径不重载；失败路径退避；失败回滚。
+fn checkMediaReload(alloc: std.mem.Allocator) void {
+    if (mSlice(&g_lockedMedia).len > 0) return;
+    if (common.g_hwnd == null or win.c.IsWindow(common.g_hwnd.?) == 0) return;
+    const want = resolveMediaPath(alloc, "") orelse return;
+    defer alloc.free(want);
+    if (want.len == 0 or std.mem.eql(u16, want, mSlice(&g_curMedia))) return;
+    if (mSlice(&g_failedMedia).len > 0 and std.mem.eql(u16, want, mSlice(&g_failedMedia))) return;
+
+    var old: [win.c.MAX_PATH:0]u16 = g_curMedia;
+    if (loadMediaInto(want)) {
+        copyW(&g_curMedia, want);
+        @memset(&g_failedMedia, 0);
+        startFrameTimer();
+        desktop.fitToParentOrMonitor(common.g_hwnd.?);
+        _ = win.c.InvalidateRect(common.g_hwnd.?, null, win.FALSE);
+        desktop.ensureWallpaperZOrder(common.g_hwnd.?);
+        common.logImpl("main", "reload-ok", .{});
+        return;
+    }
+    copyW(&g_failedMedia, want);
+    const oldSlice = mSlice(&old);
+    if (oldSlice.len > 0) {
+        const oldZ: [:0]const win.WCHAR = old[0..oldSlice.len :0];
+        _ = loadMediaInto(oldZ);
+    }
+    startFrameTimer();
 }
 
 // ---------- 窗口过程 ----------
@@ -297,6 +367,7 @@ fn resolveMediaPath(alloc: std.mem.Allocator, cmd_utf8: []const u8) ?[:0]win.WCH
         var dir_buf: [win.c.MAX_PATH]win.WCHAR = undefined;
         const dir_len = exeDir(&dir_buf);
         var cfg_buf: [win.c.MAX_PATH]win.WCHAR = undefined;
+        @memcpy(cfg_buf[0..dir_len], dir_buf[0..dir_len]);   // 先填目录，再拼文件名
         _ = joinName(&cfg_buf, dir_len, "wallpaper.txt");
         const fh = win.c._wfopen(&cfg_buf, asciiW("rb"));
         if (fh == null) return null;
@@ -399,6 +470,8 @@ pub fn main() void {
         win.c.CoUninitialize();
         return;
     };
+    copyW(&g_curMedia, media_path);
+    if (cmd.len > 0) copyW(&g_lockedMedia, media_path);
     common.g_isVideo = media.isVideoFile(media_path);
     common.logImpl("main", "isVideo={}", .{common.g_isVideo});
 

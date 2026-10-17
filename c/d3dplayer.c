@@ -86,6 +86,22 @@ typedef struct IDCompositionVisualVtbl {
     HRESULT (STDMETHODCALLTYPE *QueryInterface)(IDCompositionVisual* This, const GUID* riid, void** ppv);
     ULONG  (STDMETHODCALLTYPE *AddRef)(IDCompositionVisual* This);
     ULONG  (STDMETHODCALLTYPE *Release)(IDCompositionVisual* This);
+    // dcomp.h 真实顺序：SetOffsetX/SetOffsetX(anim)/SetOffsetY/SetOffsetY(anim)/
+    // SetTransform/SetTransform(anim)/SetTransformParent/SetEffect/
+    // SetBitmapInterpolationMode/SetBorderMode/SetClip/SetClip(anim)/SetContent。
+    // 只调用 SetContent，其余占位保证偏移正确（否则会跳到 SetOffsetX 而 AV）。
+    void* SetOffsetX;
+    void* SetOffsetXAnimation;
+    void* SetOffsetY;
+    void* SetOffsetYAnimation;
+    void* SetTransform;
+    void* SetTransformAnimation;
+    void* SetTransformParent;
+    void* SetEffect;
+    void* SetBitmapInterpolationMode;
+    void* SetBorderMode;
+    void* SetClip;
+    void* SetClipAnimation;
     HRESULT (STDMETHODCALLTYPE *SetContent)(IDCompositionVisual* This, IUnknown* content);
 } IDCompositionVisualVtbl;
 struct IDCompositionVisual { const IDCompositionVisualVtbl* lpVtbl; };

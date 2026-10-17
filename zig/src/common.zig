@@ -48,6 +48,19 @@ fn getSelfDir(dir: [*]win.WCHAR) usize {
 
 // ---------- 日志：追加到 exe 目录 debug.log，带结构化前缀 ----------
 // 与 cpp 一致：前缀如 [embed]/[d3d]。日志只在异常/关键路径写，避免把日志撑爆。
+// 写入今次生效的嵌入策略名（对齐 cpp 的 wallpaper.embed），供 tools/check_embed.py
+// 与用户自查「这台机器走的是哪条路径」。写 UTF-16LE，与 cpp 的 fwprintf 一致。
+pub fn writeEmbedMarker(name: []const u8) void {
+    var buf: [win.c.MAX_PATH]win.WCHAR = undefined;
+    const dir_len = getSelfDir(&buf);
+    const full_len = appendName(&buf, dir_len, "wallpaper.embed");
+    const fh = win.c._wfopen(buf[0..full_len].ptr, asciiW("w"));
+    if (fh == null) return;
+    for (name) |c| _ = win.c.fputwc(c, fh.?);
+    _ = win.c.fputwc('\n', fh.?);
+    _ = win.c.fclose(fh.?);
+}
+
 pub fn logImpl(prefix: []const u8, comptime fmt: []const u8, args: anytype) void {
     var buf: [win.c.MAX_PATH]win.WCHAR = undefined;
     const dir_len = getSelfDir(&buf);

@@ -123,14 +123,16 @@ fn createReader(useDxva: bool) ?*win.c.IMFSourceReader {
 }
 
 fn releaseDrawChain() void {
-    release(g_inView);
-    release(g_outView);
-    release(g_vp);
-    release(g_vpe);
-    release(g_visual);
-    release(g_target);
-    release(g_dcomp);
-    release(g_swap);
+    // 必须 release 后立刻置 null：buildDrawChain 每次先调本函数，
+    // 若残留已释放指针，二次 Release 会 use-after-free → AV。
+    release(g_inView);  g_inView = null;
+    release(g_outView); g_outView = null;
+    release(g_vp);      g_vp = null;
+    release(g_vpe);     g_vpe = null;
+    release(g_visual);  g_visual = null;
+    release(g_target);  g_target = null;
+    release(g_dcomp);   g_dcomp = null;
+    release(g_swap);    g_swap = null;
 }
 
 fn buildDrawChain() bool {

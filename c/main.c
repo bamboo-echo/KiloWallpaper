@@ -20,6 +20,14 @@ int  g_winW = 0, g_winH = 0;
 UINT g_taskbarCreated = 0;
 int  g_isVideo = 0;
 
+// 配置热重载（对齐 cpp/main.cpp 的 CheckMediaReload）：
+// wallpaper.txt 改动后 3s 内自动换素材，无需重启；失败回滚并退避。
+static wchar_t g_curMedia[MAX_PATH] = {0};     // 当前生效素材
+static wchar_t g_failedMedia[MAX_PATH] = {0};  // 最近失败路径（不反复重试）
+static wchar_t g_lockedMedia[MAX_PATH] = {0};  // 命令行指定 → 锁定，忽略配置变更
+static wchar_t* ResolveMediaPath(LPWSTR cmdLine);
+static void CheckMediaReload(void);
+
 static void GetExeDir(wchar_t* out) {
     wchar_t exe[MAX_PATH] = {0};
     GetModuleFileNameW(NULL, exe, MAX_PATH);
@@ -194,7 +202,58 @@ static void WatchdogTick(void) {
         // 系统壁纸 WorkerW 之上（EnsureWallpaperZOrder 内部按父窗口类型处理）。
         EnsureWallpaperZOrder(g_hwnd);
     }
+    CheckMediaReload();   // wallpaper.txt 改动 → 免重启换素材
     EnsureGuardAlive();   // 守护进程死了就拉起（主进程保持自愈闭环）
+}
+
+// 按当前素材类型/帧率重启帧定时器（热重载后必须重设，否则沿用旧间隔）。
+static void StartFrameTimer(void) {
+    UINT delay = 33;
+    if (g_isVideo) delay = 16;                                // 视频：首帧尽快出
+    else if (g_frameCount > 0) delay = g_delays[0] ? g_delays[0] : 100;
+    SetTimer(g_host, TIMER_FRAME, delay, NULL);
+}
+
+// 把新素材装进现有窗口；失败返回 0（调用方负责回滚）。
+static int LoadMediaInto(const wchar_t* path) {
+    int isVid = IsVideoFile(path) ? 1 : 0;
+    if (isVid) {
+        if (g_img) { GdipDisposeImage(g_img); g_img = NULL; }  // 释放旧 GIF 图
+        if (!D3DInit(g_hwnd, path)) return 0;                   // 内部先 D3DShutdown
+    } else {
+        D3DShutdown();                                           // 停视频，避免两套同时占 GPU
+        if (!LoadGif(path)) return 0;                            // 内部先释放旧 Image
+    }
+    g_isVideo = isVid;
+    return 1;
+}
+
+// 对齐 cpp/main.cpp：命令行 > 配置；同路径不重载；失败路径退避；失败回滚。
+static void CheckMediaReload(void) {
+    if (g_lockedMedia[0]) return;              // 命令行指定过 → 配置变更不生效
+    if (!IsWindow(g_hwnd)) return;
+    wchar_t* want = ResolveMediaPath(NULL);
+    if (!want[0] || wcscmp(want, g_curMedia) == 0) return;      // 空=编辑中；相同=没变
+    if (g_failedMedia[0] && wcscmp(want, g_failedMedia) == 0) return;  // 坏路径退避
+
+    wchar_t old[MAX_PATH];
+    wcsncpy(old, g_curMedia, MAX_PATH - 1); old[MAX_PATH - 1] = 0;
+
+    if (LoadMediaInto(want)) {
+        wcsncpy(g_curMedia, want, MAX_PATH - 1); g_curMedia[MAX_PATH - 1] = 0;
+        g_failedMedia[0] = 0;
+        StartFrameTimer();
+        FitToParentOrMonitor(g_hwnd);
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        EnsureWallpaperZOrder(g_hwnd);
+        LogFail(L"reload-ok", want, S_OK);
+        return;
+    }
+
+    LogFail(L"reload-failed", want, g_lastHr ? g_lastHr : E_FAIL);
+    wcsncpy(g_failedMedia, want, MAX_PATH - 1); g_failedMedia[MAX_PATH - 1] = 0;
+    if (old[0]) LoadMediaInto(old);            // 回滚旧素材
+    StartFrameTimer();
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -426,6 +485,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int nCmdSh
     GdiplusStartup(&gdiToken, &gsi, NULL);
 
     wchar_t* media = ResolveMediaPath(cmdLine);
+    wcsncpy(g_curMedia, media, MAX_PATH - 1); g_curMedia[MAX_PATH - 1] = 0;
+    if (cmdLine && cmdLine[0]) {   // 命令行指定 → 锁定，热重载忽略配置
+        wcsncpy(g_lockedMedia, media, MAX_PATH - 1); g_lockedMedia[MAX_PATH - 1] = 0;
+    }
     // 根据扩展名判定是视频还是 GIF/图片
     g_isVideo = IsVideoFile(media) ? 1 : 0;
 
@@ -484,10 +547,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int nCmdSh
     WriteFileMarker(L"wallpaper.ok");
     EnsureGuardAlive();
 
-    UINT firstDelay = 33;
-    if (g_isVideo) firstDelay = 16;  // 首帧尽快出
-    else if (g_frameCount > 0) firstDelay = g_delays[0] ? g_delays[0] : 100;
-    SetTimer(g_host, TIMER_FRAME, firstDelay, NULL);
+    StartFrameTimer();
     SetTimer(g_host, TIMER_WATCHDOG, WATCHDOG_MS, NULL);
 
     MSG msg;

@@ -294,6 +294,7 @@ pub fn embedOrFallback(hwnd: HWND) bool {
             ensureWallpaperZOrder(hwnd);
             _ = win.c.RedrawWindow(hwnd, null, null, win.c.RDW_INVALIDATE | win.c.RDW_UPDATENOW);
             common.logImpl("embed", "embed: progman-layered anchor", .{});
+            common.writeEmbedMarker("progman-layered");
             return true;
         }
         common.logImpl("embed", "embed: setparent failed", .{});
@@ -311,12 +312,14 @@ pub fn embedOrFallback(hwnd: HWND) bool {
             g_wpDefView = null;
             g_wpWorkerW = null;
             common.logImpl("embed", "embed: classic workerw-child", .{});
+            common.writeEmbedMarker("workerw-child");
             return true;
         }
     }
 
     // ---- 兜底：顶层窗口压底（已知会盖图标，仅保底不黑屏） ----
     common.logImpl("embed", "embed: toplevel fallback", .{});
+    common.writeEmbedMarker("toplevel-fallback");
     applyFallbackTopLevel(hwnd);
     return true;
 }
