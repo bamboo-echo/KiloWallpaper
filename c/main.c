@@ -117,6 +117,16 @@ static void AdvanceFrame(void) {
         if (delay < 10) delay = 10;
         SetTimer(g_host, TIMER_FRAME, delay, NULL);
         InvalidateRect(g_hwnd, NULL, FALSE);
+        // GIF 帧推进日志（节流：首帧 + 每 60 帧）——GIF 路径此前零业务日志，
+        // 动画是否在走只能靠任务管理器猜；现在日志可直接证明。
+        static DWORD s_tick = 0;
+        s_tick++;
+        if (s_tick == 1 || (s_tick % 60) == 0) {
+            wchar_t line[96];
+            _snwprintf(line, 96, L"[main] gif frame=%lu/%lu delay=%ums",
+                       (unsigned long)s_tick, (unsigned long)g_frameCount, (unsigned)delay);
+            LogFail(line, NULL, S_OK);
+        }
     }
 }
 
