@@ -1,34 +1,167 @@
-# KiloWallpaper CI - 编译 + 文档数字校验
+# KiloWallpaper CI/CD - 四套实现并行编译 + README 校验 + tag 汇总发布
 #
 # 干什么：
-#   1. 在 windows-2022 runner 上用 MSVC 编译两个 exe（直接跑 cpp\build.bat）
-#   2. 跑 tools\verify_claims.py：README 里的行数/体积数字必须与实际一致
-#   3. 把编译产物传成 artifact，方便别人直接下载试用
+#   1. 并行编译四套实现（cpp / c / rust / zig），各自上传 artifact
+#   2. verify job 跑 tools\verify_claims.py：README 里的行数/体积数字必须与实际一致
+#   3. tag（v*）推送时：下载全部产物，打包 zip 并创建 GitHub Release
 #
-# 为什么不装第三方 action：GitHub 的 windows runner 预装了 Visual Studio 2022
-# 与 Windows SDK，build.bat 自己的 vswhere 就能定位到工具链。保持零第三方依赖。
-#
-# 验证不了什么：runner 里没有 Explorer 桌面（无 Progman / WorkerW），所以
-# 「桌面嵌入是否真的生效」CI 无法验证 —— 那部分由 cpp\wallpaper.embed 标记与
-# 文档中的实测状态说明承担（见 README「各 Windows 版本的验证状态」）。
+# 设计约束：
+#   * 只用 GitHub 官方 action（checkout / upload-artifact / download-artifact）
+#     + runner 预装工具链（MSVC 2022、Rust stable、Python、gh CLI），不引第三方 action
+#   * Zig 不在 runner 预装列表里，CI 里下载官方 zip（~48MB，下载到 runner 的
+#     C:\tools，不碰本地磁盘）；版本与本地开发用的 0.13.0 一致
+#   * 验证不了什么：runner 没有 Explorer 桌面（无 Progman / WorkerW），
+#     「桌面嵌入是否真的生效」CI 无法验证 —— 由 wallpaper.embed 标记与
+#     README「各 Windows 版本的验证状态」承担。
+#   * 运行时长按最慢的 job（zig 首次下载+编译）估算约 5 分钟。
 
 name: build
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: MSVC 编译 + 校验 README 数字
-    runs-on: windows-2022
+  # ==================== 四套实现并行编译 ====================
 
+  build-cpp:
+    name: 编译 cpp
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      - name: 编译（build.bat）
+      - name: 编译（cpp\build.bat）
+        run: cpp\build.bat
+        shell: cmd
+
+      - name: 自检：进程应能启动并写出嵌入标记
+        run: |
+          cpp\DynamicWallpaperGuard.exe
+          ping -n 3 127.0.0.1 >nul
+          tasklist /fi "imagename eq DynamicWallpaperGuard.exe" | findstr /i DynamicWallpaperGuard >nul
+          if errorlevel 1 exit /b 1
+          echo guard started ok
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-cpp
+          path: |
+            cpp/DynamicWallpaper.exe
+            cpp/DynamicWallpaperGuard.exe
+          if-no-files-found: error
+
+  build-c:
+    name: 编译 c
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译（c\build.bat）
+        run: c\build.bat
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-c
+          path: |
+            c/DynamicWallpaper.exe
+            c/DynamicWallpaperGuard.exe
+          if-no-files-found: error
+
+  build-rust:
+    name: 编译 rust
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: rust-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: 编译（cargo build --release）
+        run: cargo build --release
+        working-directory: rust
+
+      - name: 自检：进程应能启动
+        run: |
+          start "" rust\target\release\DynamicWallpaperGuard.exe
+          ping -n 3 127.0.0.1 >nul
+          tasklist /fi "imagename eq DynamicWallpaperGuard.exe" | findstr /i DynamicWallpaperGuard >nul
+          if errorlevel 1 exit /b 1
+          echo rust guard started ok
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-rust
+          path: |
+            rust/target/release/DynamicWallpaper.exe
+            rust/target/release/DynamicWallpaperGuard.exe
+          if-no-files-found: error
+
+  build-zig:
+    name: 编译 zig
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 Zig 0.13.0（官方 zip，到 runner 的 C:\tools）
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\tools | Out-Null
+          Invoke-WebRequest -Uri https://ziglang.org/download/0.13.0/zig-x86_64-windows-0.13.0.zip -OutFile C:\tools\zig.zip
+          Expand-Archive -Path C:\tools\zig.zip -DestinationPath C:\tools -Force
+          Get-ChildItem C:\tools -Recurse -Filter zig.exe | Select-Object -First 1 -Expand FullName
+        shell: pwsh
+
+      - name: 编译（zig build，MSVC 环境）
+        run: |
+          set ZIGEXE=
+          for /f "usebackq tokens=*" %%i in (`dir /b /s C:\tools\zig.exe`) do set ZIGEXE=%%i
+          if not defined ZIGEXE (echo zig.exe not found & exit /b 1)
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VS=%%i
+          if not defined VS (echo vswhere failed & exit /b 1)
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat"
+          cd zig
+          "%ZIGEXE%" build -Dtarget=x86_64-windows-msvc -Doptimize=ReleaseFast
+        shell: cmd
+
+      - name: 自检：进程应能启动
+        run: |
+          start "" zig\zig-out\bin\DynamicWallpaper.exe
+          ping -n 4 127.0.0.1 >nul
+          tasklist /fi "imagename eq DynamicWallpaper.exe" | findstr /i DynamicWallpaper >nul
+          if errorlevel 1 exit /b 1
+          echo zig main started ok
+        shell: cmd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-zig
+          path: |
+            zig/zig-out/bin/DynamicWallpaper.exe
+            zig/zig-out/bin/DynamicWallpaperGuard.exe
+          if-no-files-found: error
+
+  # ==================== README 数字校验 ====================
+
+  verify:
+    name: 校验 README 数字
+    needs: build-cpp
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # verify_claims.py 校验的是 cpp 的行数与二进制体积，需要产物在场
+      - name: 编译（供校验）
         run: cpp\build.bat
         shell: cmd
 
@@ -36,11 +169,42 @@ jobs:
         run: python tools\verify_claims.py
         shell: cmd
 
-      - name: 上传编译产物
-        uses: actions/upload-artifact@v4
+  # ==================== tag 汇总发布（CD） ====================
+
+  release:
+    name: 汇总发布
+    needs: [build-cpp, build-c, build-rust, build-zig]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载全部产物
+        uses: actions/download-artifact@v4
         with:
-          name: DynamicWallpaper-binaries
-          path: |
-            cpp/DynamicWallpaper.exe
-            cpp/DynamicWallpaperGuard.exe
-          if-no-files-found: error
+          path: artifacts
+
+      - name: 打包 zip
+        run: |
+          $zip = "KiloWallpaper-${{ github.ref_name }}.zip"
+          Compress-Archive -Path artifacts\* -DestinationPath $zip -Force
+          Get-Item $zip | Select-Object Name, Length
+        shell: pwsh
+
+      - name: 创建 Release 并附带四套产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "%GITHUB_REF_NAME%" `
+            "KiloWallpaper-${{ github.ref_name }}.zip" `
+            "artifacts\bin-cpp\DynamicWallpaper.exe" `
+            "artifacts\bin-cpp\DynamicWallpaperGuard.exe" `
+            "artifacts\bin-c\DynamicWallpaper.exe" `
+            "artifacts\bin-c\DynamicWallpaperGuard.exe" `
+            "artifacts\bin-rust\DynamicWallpaper.exe" `
+            "artifacts\bin-rust\DynamicWallpaperGuard.exe" `
+            "artifacts\bin-zig\DynamicWallpaper.exe" `
+            "artifacts\bin-zig\DynamicWallpaperGuard.exe" `
+            --title "KiloWallpaper ${{ github.ref_name }}" `
+            --generate-notes
+        shell: pwsh
