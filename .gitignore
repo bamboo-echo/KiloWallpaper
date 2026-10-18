@@ -78,5 +78,9 @@ venv/
 # -------- C 版（c/）本机素材路径配置 --------
 /c/wallpaper.txt
 
+# -------- ASM 版（asm/）本机素材路径配置 + 测试图 --------
+/asm/wallpaper.txt
+/asm/_test.jpg
+
 # -------- MASM 列表文件 --------
 *.lst

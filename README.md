@@ -2,9 +2,9 @@
 
 [![build](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml/badge.svg)](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml)
 
-**下载**：[Releases](https://github.com/bamboo-echo/KiloWallpaper/releases/latest) 提供四套实现的
+**下载**：[Releases](https://github.com/bamboo-echo/KiloWallpaper/releases/latest) 提供五套实现的
 即用 exe（主程序 + 守护成对，解压即用，不装任何运行时）。文件名带语言前缀：
-`DynamicWallpaper-cpp.exe` / `-c.exe` / `-rust.exe` / `-zig.exe`。
+`DynamicWallpaper-cpp.exe` / `-c.exe` / `-rust.exe` / `-zig.exe` / `-asm.exe`。
 自己日常用选 **c 版**（体积最小、CPU 最低）；以 **cpp 版**为参考基准（本文数字由它产出）。
 换素材：编辑 exe 旁的 `wallpaper.txt` 首行，3 秒内热切换。
 
@@ -78,7 +78,7 @@ CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 
 
 ## 多语言实现对照
 
-仓库里有**四套**独立实现，都只用 Windows 系统 DLL，运行时不依赖任何第三方库。
+仓库里有**五套**独立实现，都只用 Windows 系统 DLL，运行时不依赖任何第三方库。
 共享同一套约定：配置文件 `wallpaper.txt`（放可执行文件旁边，不入库）、
 窗口类名 `DynamicWallpaper`、退出握手 `wallpaper.quit` → `wallpaper.graceful`。
 
@@ -88,15 +88,22 @@ CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 
 | [`c/`](c/) | C | 41.0 KB / 13.5 KB | 54.5 KB | 本机实测：视频、GIF、热重载、资源快照日志 |
 | [`rust/`](rust/) | Rust | 188.0 KB / 131.5 KB | 319.5 KB | 编译通过，本机播放实测（NV12 DXVA） |
 | [`zig/`](zig/) | Zig | ~631 KB / ~552 KB | ~1.18 MB | 编译通过，本机播放实测；内存比其他三套高约 88 MB，原因见下 |
+| [`asm/`](asm/) | MASM x64 | 22.0 KB / — | **22.0 KB** | 本机实测：静态图嵌入、热重载、资源快照、退出握手 |
 
 **请以 `cpp/` 为准**：本文「特点一」里的 CPU / 内存数字、目录内的诊断工具链，
-都以它为准。`c/`、`rust/`、`zig/` 是为了对照同一个问题在不同语言下的解法：
+都以它为准。`c/`、`rust/`、`zig/`、`asm/` 是为了对照同一个问题在不同语言下的解法：
 COM 接口怎么手写 vtable、Media Foundation 属性怎么拆包、DirectComposition 怎么接——
-功能与 cpp 对齐，但不承诺运行时一致，也别拿它们的体积去跟 cpp 比“谁写得好”。
+功能与 cpp 对齐，但不承诺运行时一致，也别拿它们的体积去跟 cpp 比"谁写得好"。
 
 `c/` 早期是 cpp 去掉热重载前的快照，现在功能已经追平（热重载和 `wallpaper.embed`
 标记是后来补的）。体积比 cpp 小 44%，来自 C++ 的异常/RTTI/iostream 开销，
 不是写法更优。
+
+`asm/` 是五套里最特殊的一件：**纯 MASM x64 汇编写成，零 CRT**（不链 msvcrt/ucrt），
+ml64 不支持 `invoke`，全部调用手写 x64 调用约定（全局参数槽 + 手写栈布局）。
+范围只保留静态图片壁纸——MF/D3D 播放链在汇编里没有意义，静态图 CPU 精确为 0。
+它是「最小可读的桌面嵌入参考实现」：嵌入层级、0x052C 唤醒、DPI 感知、
+配置热重载、退出握手、`[res]` 资源快照全部都在，单文件 2151 行。
 
 四套在同一素材（2560×1440 / 24fps）下实测，取 trim 之后的稳定段：
 
@@ -119,7 +126,7 @@ zig 多出来的 88 MB 查到了底：跳过 MF 解码器（`KW_NO_READER=1`）�
 和 C 版没有区别，差异在 MF 运行时内部分配 surface 池的行为上，应用层没有安全的改法。
 这是对照实现的已知情况，不是 bug，也修不动。
 
-三套对照实现的细节各见目录内 README。
+四套对照实现的细节各见目录内 README。
 
 其余目录：
 

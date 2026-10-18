@@ -1,7 +1,7 @@
-# KiloWallpaper CI/CD - 四套实现并行编译 + README 校验 + tag 汇总发布
+# KiloWallpaper CI/CD - 五套实现并行编译 + README 校验 + tag 汇总发布
 #
 # 干什么：
-#   1. 并行编译四套实现（cpp / c / rust / zig），各自上传 artifact
+#   1. 并行编译五套实现（cpp / c / rust / zig / asm），各自上传 artifact
 #   2. verify job 跑 tools\verify_claims.py：README 里的行数/体积数字必须与实际一致
 #   3. tag（v*）推送时：下载全部产物，打包 zip 并创建 GitHub Release
 #
@@ -161,6 +161,34 @@ jobs:
             zig/zig-out/bin/DynamicWallpaperGuard.exe
           if-no-files-found: error
 
+  build-asm:
+    name: 编译 asm
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      # ml64 + link，零 CRT；build.bat 内部用 vswhere 定位 MSVC + vcvarsall 配环境
+      - name: 编译（asm\build.bat）
+        run: asm\build.bat
+        shell: cmd
+
+      - name: 自检：产物 PE 有效
+        run: |
+          $f = "asm\DynamicWallpaper.exe"
+          if (!(Test-Path $f)) { Write-Error "missing $f"; exit 1 }
+          $h = [System.IO.File]::ReadAllBytes($f)[0..1]
+          $sz = (Get-Item $f).Length
+          if ("$([char]$h[0])$([char]$h[1])" -ne "MZ" -or $sz -lt 1024) { Write-Error "bad PE $f"; exit 1 }
+          Write-Output "ok $f $sz B"
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bin-asm
+          path: |
+            asm/DynamicWallpaper.exe
+          if-no-files-found: error
+
   # ==================== README 数字校验 ====================
 
   verify:
@@ -183,7 +211,7 @@ jobs:
 
   release:
     name: 汇总发布
-    needs: [build-cpp, build-c, build-rust, build-zig]
+    needs: [build-cpp, build-c, build-rust, build-zig, build-asm]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     # GITHUB_TOKEN 默认只有 contents:read，gh release create 需要写权限。
@@ -235,10 +263,11 @@ jobs:
           Copy-Item artifacts\bin-rust\DynamicWallpaperGuard.exe upload\DynamicWallpaperGuard-rust.exe
           Copy-Item artifacts\bin-zig\DynamicWallpaper.exe      upload\DynamicWallpaper-zig.exe
           Copy-Item artifacts\bin-zig\DynamicWallpaperGuard.exe upload\DynamicWallpaperGuard-zig.exe
+          Copy-Item artifacts\bin-asm\DynamicWallpaper.exe      upload\DynamicWallpaper-asm.exe
           Get-ChildItem upload | Select-Object Name, Length
         shell: pwsh
 
-      - name: 上传产物（逐个上传 + 每文件独立重试 + 收尾校验 9 个资产齐全）
+      - name: 上传产物（逐个上传 + 每文件独立重试 + 收尾校验 10 个资产齐全）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -248,6 +277,7 @@ jobs:
             'DynamicWallpaper-c.exe', 'DynamicWallpaperGuard-c.exe',
             'DynamicWallpaper-rust.exe', 'DynamicWallpaperGuard-rust.exe',
             'DynamicWallpaper-zig.exe', 'DynamicWallpaperGuard-zig.exe',
+            'DynamicWallpaper-asm.exe',
             $zip
           )
           # uploads.github.com 对新建 release 间歇 404（本地单文件稳定、CI 批量必挂），
