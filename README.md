@@ -2,11 +2,17 @@
 
 [![build](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml/badge.svg)](https://github.com/bamboo-echo/KiloWallpaper/actions/workflows/build.yml)
 
+**下载**：[Releases](https://github.com/bamboo-echo/KiloWallpaper/releases/latest) 提供四套实现的
+即用 exe（主程序 + 守护成对，解压即用，不装任何运行时）。文件名带语言前缀：
+`DynamicWallpaper-cpp.exe` / `-c.exe` / `-rust.exe` / `-zig.exe`。
+自己日常用选 **c 版**（体积最小、CPU 最低）；以 **cpp 版**为参考基准（本文数字由它产出）。
+换素材：编辑 exe 旁的 `wallpaper.txt` 首行，3 秒内热切换。
+
 用 Win32 原生 API 手写的极简动态壁纸。**播放 2K 视频时只占一个逻辑核的约 2~4%，
 常驻内存约 6.5 MB** —— 「极小占用」说的是这个**运行时开销**，不是文件大小。
 
 > 这是一份**最小可读的 Windows 桌面嵌入参考实现**：
-> 1872 行 C++ 串起 DXVA 硬解 → DirectComposition 零拷贝呈现 → Progman/WorkerW 嵌入 →
+> 1926 行 C++ 串起 DXVA 硬解 → DirectComposition 零拷贝呈现 → Progman/WorkerW 嵌入 →
 > 图标层双向 z 序锚定 → 双进程守护。功能刻意做得少，代码刻意写得短。
 > 可执行文件名仍为 `DynamicWallpaper.exe` / `DynamicWallpaperGuard.exe`。
 
@@ -40,14 +46,14 @@ CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 
 
 ## 特点二：可执行文件本身也很小
 
-项目名 **Kilo**-Wallpaper 就是从「主程序 68 KB（kilobyte 级）」来的。
+项目名 **Kilo**-Wallpaper 就是从「主程序 70 KB 级（kilobyte 级）」来的。
 这一项是**磁盘占用**，和上面的运行时开销是两个独立指标：
 
 | 磁盘指标 | 大小 | 备注 |
 | --- | ---: | --- |
-| 主程序二进制 | **68.5 KB**（70,144 B） | MSVC `/O2`，只链接 Windows 系统 DLL |
+| 主程序二进制 | **70.0 KB**（71,680 B） | MSVC `/O2`，只链接 Windows 系统 DLL |
 | 守护进程二进制 | **29.0 KB**（29,696 B） | |
-| **两个合计** | **97.5 KB** | 加上配置文件与脚本，整个目录约 100 KB 量级 |
+| **两个合计** | **99.0 KB** | 加上配置文件与脚本，整个目录约 100 KB 量级 |
 
 （小提示：不同 MSVC 补丁版本生成的 exe 会差几百字节，属正常现象。）
 
@@ -78,7 +84,7 @@ CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 
 
 | 目录 | 语言 | 主程序 / 守护 | 体积合计 | 验证状态 |
 | --- | --- | ---: | ---: | --- |
-| [`cpp/`](cpp/) | C++ | 68.5 KB / 29.0 KB | **97.5 KB** | 本机全功能实测，本文性能数字由它产出 |
+| [`cpp/`](cpp/) | C++ | 70.0 KB / 29.0 KB | **99.0 KB** | 本机全功能实测，本文性能数字由它产出 |
 | [`c/`](c/) | C | 41.0 KB / 13.5 KB | 54.5 KB | 本机实测：视频、GIF、热重载、资源快照日志 |
 | [`rust/`](rust/) | Rust | 188.0 KB / 131.5 KB | 319.5 KB | 编译通过，本机播放实测（NV12 DXVA） |
 | [`zig/`](zig/) | Zig | ~631 KB / ~552 KB | ~1.18 MB | 编译通过，本机播放实测；内存比其他三套高约 88 MB，原因见下 |
@@ -96,7 +102,7 @@ COM 接口怎么手写 vtable、Media Foundation 属性怎么拆包、DirectComp
 
 | 实现 | CPU 单核 | 工作集 | 私有提交 | 二进制 |
 | --- | ---: | ---: | ---: | ---: |
-| cpp | 3.97% | 7.0 MB（专用） | 216 MB | 97.5 KB |
+| cpp | 3.97% | 7.0 MB（专用） | 216 MB | 99.0 KB |
 | c | 3.73% | 7.4 MB（专用） | 216 MB | 54.5 KB |
 | rust | 3.71% | 12 MB（总） | 216 MB | 319.5 KB |
 | zig | 5.93% | 105 MB（总） | 313 MB | ~1.18 MB |

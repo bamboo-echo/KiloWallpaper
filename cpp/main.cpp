@@ -7,6 +7,7 @@
 #include "d3dplayer.h"
 #include <stdlib.h>   // _wtoi
 #include <wchar.h>    // wcsrchr / wcscmp / wcsstr
+#include <psapi.h>    // GetProcessMemoryInfo（资源快照日志）
 
 const UINT TIMER_FRAME = 1;
 const UINT TIMER_WATCHDOG = 2;
@@ -51,6 +52,48 @@ static void LogFail(const wchar_t* msg, const std::wstring& path, HRESULT hr) {
     fclose(f);
 }
 
+// ---------- 资源快照（排查内存/句柄泄漏） ----------
+// 每 60s 往 debug.log 写一行：工作集/私有提交/峰值/句柄/GDI/USER 对象数。
+// 读法：commit 持续上涨=堆泄漏；handles/gdi/user 持续上涨=内核对象泄漏
+// （典型如 COM 未 Release）。间隔可用环境变量 KW_RES_LOG_MS 调整，0=关闭。
+static void LogResourceSnapshot() {
+    static DWORD s_last = 0;
+    static int s_init = 0;
+    static DWORD s_start = 0;
+    static DWORD s_interval = 60000;
+    if (!s_init) {
+        s_init = 1;
+        s_start = GetTickCount();   // 进程内起点，用于算运行秒数
+        wchar_t buf[16] = {0};
+        if (GetEnvironmentVariableW(L"KW_RES_LOG_MS", buf, 16) > 0) {
+            int v = _wtoi(buf);
+            s_interval = (v >= 0) ? (DWORD)v : 0;
+        }
+    }
+    if (s_interval == 0) return;
+    DWORD now = GetTickCount();
+    if (s_last && now - s_last < s_interval) return;
+    s_last = now;
+
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    pmc.cb = sizeof(pmc);
+    DWORD handles = 0;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) return;
+    GetProcessHandleCount(GetCurrentProcess(), &handles);
+    DWORD gdi = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+    DWORD user = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
+
+    wchar_t line[256];
+    _snwprintf(line, 256,
+        L"[res] uptime=%lus ws=%uMB commit=%uMB peakws=%uMB handles=%lu gdi=%lu user=%lu",
+        (unsigned long)((now - s_start) / 1000),
+        (unsigned)(pmc.WorkingSetSize >> 20),
+        (unsigned)(pmc.PrivateUsage >> 20),
+        (unsigned)(pmc.PeakWorkingSetSize >> 20),
+        (unsigned long)handles, (unsigned long)gdi, (unsigned long)user);
+    LogFail(line, L"", S_OK);
+}
+
 static void AdvanceFrame() {
     if (!IsWindow(g_hwnd)) return;
     if (g_isVideo) {
@@ -72,6 +115,16 @@ static void AdvanceFrame() {
         if (delay < 10) delay = 10;
         SetTimer(g_host, TIMER_FRAME, delay, nullptr);
         InvalidateRect(g_hwnd, nullptr, FALSE);
+        // GIF 帧推进日志（节流：首帧 + 每 60 帧），与 c 版同款——
+        // GIF 路径此前零业务日志，动画是否在走只能靠任务管理器猜。
+        static DWORD s_tick = 0;
+        s_tick++;
+        if (s_tick == 1 || (s_tick % 60) == 0) {
+            wchar_t line[96];
+            _snwprintf(line, 96, L"[main] gif frame=%lu/%lu delay=%ums",
+                       (unsigned long)s_tick, (unsigned long)g_frameCount, (unsigned)delay);
+            LogFail(line, L"", S_OK);
+        }
     }
 }
 
@@ -200,6 +253,7 @@ static void WatchdogTick() {
         EnsureWallpaperZOrder(g_hwnd);
     }
     CheckMediaReload();     // wallpaper.txt 改动 → 免重启换素材
+    LogResourceSnapshot();  // 每 60s 一条资源快照（排查泄漏）
     EnsureGuardAlive();   // 守护进程死了就拉起（主进程保持自愈闭环）
 }
 

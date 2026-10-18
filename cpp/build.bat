@@ -49,7 +49,7 @@ cl /nologo /O2 /EHsc /MD /DUNICODE /D_UNICODE guard.cpp /link /SUBSYSTEM:WINDOWS
 if errorlevel 1 goto buildfail
 
 echo [2/2] DynamicWallpaper.exe
-cl /nologo /O2 /EHsc /MD /DUNICODE /D_UNICODE main.cpp media.cpp render.cpp desktop.cpp d3dplayer.cpp /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib mfplat.lib mfreadwrite.lib mfuuid.lib d3d11.lib dxgi.lib shlwapi.lib ole32.lib comctl32.lib uxtheme.lib /OUT:DynamicWallpaper.exe
+cl /nologo /O2 /EHsc /MD /DUNICODE /D_UNICODE main.cpp media.cpp render.cpp desktop.cpp d3dplayer.cpp /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib mfplat.lib mfreadwrite.lib mfuuid.lib d3d11.lib dxgi.lib shlwapi.lib ole32.lib comctl32.lib uxtheme.lib psapi.lib /OUT:DynamicWallpaper.exe
 if errorlevel 1 goto buildfail
 
 echo [OK] DynamicWallpaper.exe + DynamicWallpaperGuard.exe built
