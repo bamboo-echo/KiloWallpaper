@@ -205,20 +205,46 @@ jobs:
           Get-Item $zip | Select-Object Name, Length
         shell: pwsh
 
-      - name: 创建 Release 并附带四套产物
+      - name: 清理上次失败可能残留的空 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "%GITHUB_REF_NAME%" --yes 2>$null
+          exit 0
+        shell: pwsh
+
+      - name: 创建 Release（不带产物）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "%GITHUB_REF_NAME%" `
-            "KiloWallpaper-${{ github.ref_name }}.zip" `
-            "artifacts\bin-cpp\DynamicWallpaper.exe" `
-            "artifacts\bin-cpp\DynamicWallpaperGuard.exe" `
-            "artifacts\bin-c\DynamicWallpaper.exe" `
-            "artifacts\bin-c\DynamicWallpaperGuard.exe" `
-            "artifacts\bin-rust\DynamicWallpaper.exe" `
-            "artifacts\bin-rust\DynamicWallpaperGuard.exe" `
-            "artifacts\bin-zig\DynamicWallpaper.exe" `
-            "artifacts\bin-zig\DynamicWallpaperGuard.exe" `
             --title "KiloWallpaper ${{ github.ref_name }}" `
-            --generate-notes
+            --generate-notes `
+            --verify-tag
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+        shell: pwsh
+
+      - name: 上传产物（先等 5s 避开刚建 release 的上传延迟，失败重试 3 次）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Start-Sleep -Seconds 5
+          $files = @(
+            "KiloWallpaper-${{ github.ref_name }}.zip",
+            "artifacts\bin-cpp\DynamicWallpaper.exe",
+            "artifacts\bin-cpp\DynamicWallpaperGuard.exe",
+            "artifacts\bin-c\DynamicWallpaper.exe",
+            "artifacts\bin-c\DynamicWallpaperGuard.exe",
+            "artifacts\bin-rust\DynamicWallpaper.exe",
+            "artifacts\bin-rust\DynamicWallpaperGuard.exe",
+            "artifacts\bin-zig\DynamicWallpaper.exe",
+            "artifacts\bin-zig\DynamicWallpaperGuard.exe"
+          )
+          for ($i = 1; $i -le 3; $i++) {
+            gh release upload "%GITHUB_REF_NAME%" @files --clobber
+            if ($LASTEXITCODE -eq 0) { Write-Output "upload ok"; exit 0 }
+            Write-Output "upload attempt $i failed, retrying..."
+            Start-Sleep -Seconds 8
+          }
+          exit 1
         shell: pwsh
