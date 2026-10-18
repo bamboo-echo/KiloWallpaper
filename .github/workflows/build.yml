@@ -224,30 +224,53 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
         shell: pwsh
 
-      - name: 上传产物（等 30s 让新 release 的 CDN 传播，失败重试 5 次）
+      - name: 准备上传文件（带语言前缀，四套 exe 同名会互相覆盖）
+        run: |
+          New-Item -ItemType Directory -Force -Path upload | Out-Null
+          Copy-Item artifacts\bin-cpp\DynamicWallpaper.exe      upload\DynamicWallpaper-cpp.exe
+          Copy-Item artifacts\bin-cpp\DynamicWallpaperGuard.exe upload\DynamicWallpaperGuard-cpp.exe
+          Copy-Item artifacts\bin-c\DynamicWallpaper.exe        upload\DynamicWallpaper-c.exe
+          Copy-Item artifacts\bin-c\DynamicWallpaperGuard.exe   upload\DynamicWallpaperGuard-c.exe
+          Copy-Item artifacts\bin-rust\DynamicWallpaper.exe     upload\DynamicWallpaper-rust.exe
+          Copy-Item artifacts\bin-rust\DynamicWallpaperGuard.exe upload\DynamicWallpaperGuard-rust.exe
+          Copy-Item artifacts\bin-zig\DynamicWallpaper.exe      upload\DynamicWallpaper-zig.exe
+          Copy-Item artifacts\bin-zig\DynamicWallpaperGuard.exe upload\DynamicWallpaperGuard-zig.exe
+          Get-ChildItem upload | Select-Object Name, Length
+        shell: pwsh
+
+      - name: 上传产物（逐个上传 + 每文件独立重试 + 收尾校验 9 个资产齐全）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          Start-Sleep -Seconds 30
-          $files = @(
-            "KiloWallpaper-${{ github.ref_name }}.zip",
-            "artifacts\bin-cpp\DynamicWallpaper.exe",
-            "artifacts\bin-cpp\DynamicWallpaperGuard.exe",
-            "artifacts\bin-c\DynamicWallpaper.exe",
-            "artifacts\bin-c\DynamicWallpaperGuard.exe",
-            "artifacts\bin-rust\DynamicWallpaper.exe",
-            "artifacts\bin-rust\DynamicWallpaperGuard.exe",
-            "artifacts\bin-zig\DynamicWallpaper.exe",
-            "artifacts\bin-zig\DynamicWallpaperGuard.exe"
+          $zip = "KiloWallpaper-${{ github.ref_name }}.zip"
+          $expect = @(
+            'DynamicWallpaper-cpp.exe', 'DynamicWallpaperGuard-cpp.exe',
+            'DynamicWallpaper-c.exe', 'DynamicWallpaperGuard-c.exe',
+            'DynamicWallpaper-rust.exe', 'DynamicWallpaperGuard-rust.exe',
+            'DynamicWallpaper-zig.exe', 'DynamicWallpaperGuard-zig.exe',
+            $zip
           )
-          # uploads.github.com 对刚创建的 release 有 CDN 传播延迟，实测 3 次×8s
-          # 仍 404；拉到 30s 间隔 × 5 次。清理步骤保证 release 是新的，
-          # 不需要 --clobber（覆盖路径反而多一层删除-重传的不确定性）。
-          for ($i = 1; $i -le 5; $i++) {
-            gh release upload "$env:GITHUB_REF_NAME" @files
-            if ($LASTEXITCODE -eq 0) { Write-Output "upload ok"; exit 0 }
-            Write-Output "upload attempt $i failed, waiting 30s..."
-            Start-Sleep -Seconds 30
+          # uploads.github.com 对新建 release 间歇 404（本地单文件稳定、CI 批量必挂），
+          # 且批量上传时四套同名 exe 互相覆盖——故：带前缀 + 逐个传 + 独立重试，
+          # 每轮先查缺哪些再只传缺的，天然幂等。
+          for ($round = 1; $round -le 4; $round++) {
+            $have = (gh release view "$env:GITHUB_REF_NAME" --json assets | ConvertFrom-Json).assets.name
+            $missing = $expect | Where-Object { $have -notcontains $_ }
+            if (-not $missing) { Write-Output "all $($expect.Count) assets present"; exit 0 }
+            Write-Output "round $round missing: $($missing -join ', ')"
+            foreach ($f in $missing) {
+              $path = if ($f -eq $zip) { $f } else { "upload\$f" }
+              for ($j = 1; $j -le 3; $j++) {
+                gh release upload "$env:GITHUB_REF_NAME" $path --clobber 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) { Write-Output "  uploaded $f"; break }
+                Write-Output "  $f attempt $j failed"
+                Start-Sleep -Seconds 10
+              }
+            }
+            Start-Sleep -Seconds 15
           }
-          exit 1
+          $have = (gh release view "$env:GITHUB_REF_NAME" --json assets | ConvertFrom-Json).assets.name
+          $missing = $expect | Where-Object { $have -notcontains $_ }
+          if ($missing) { Write-Error "still missing: $($missing -join ', ')"; exit 1 }
+          Write-Output "all $($expect.Count) assets present"
         shell: pwsh
