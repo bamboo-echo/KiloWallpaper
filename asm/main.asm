@@ -157,8 +157,11 @@ g_resStart      dword 0
 g_resLast       dword 0
 g_resInterval   dword 60000
 g_resInit       dword 0
+g_resSec        dword 0          ; [res] uptime 秒（div 商中转，避免被 rax 复用覆盖）
 g_enumFound     qword 0
 g_enumProgman   qword 0
+g_cbHwnd        qword 0          ; EnumWindows 回调入口保存的 rcx（hwnd），防 API 调用后易失寄存器失效
+g_cbLParam      qword 0          ; EnumWindows 回调入口保存的 rdx（lParam）
 g_msg           byte 64 dup (0)
 g_wndcls        byte 88 dup (0)
 g_scratchW      word 32 dup (0)
@@ -191,17 +194,12 @@ g_lStrategy qword 0
 g_lWorker qword 0
 g_ldefView qword 0
 g_line word 320 dup (0)
+g_resBuf word 320 dup (0)      ; [res] 快照专用：wsprintfW 目的地，勿与 g_line 混用
+                                 ; （曾因同用 g_line，LogLine 自引用复制出时间戳无限重复）
 g_lmsg qword 0
 g_now dword 0
 g_nread dword 0
 g_readOk dword 0
-g_svAX qword 0
-g_svCX qword 0
-g_svDX qword 0
-g_svR8 qword 0
-g_svR9 qword 0
-g_svSI qword 0
-g_svDI qword 0
 g_path word 520 dup (0)
 g_pathPtr qword 0
 g_pcls word 80 dup (0)
@@ -252,8 +250,6 @@ szTagEmbed      dw '[','e','m','b','e','d',']'
                  dw 0
 szTagRes        dw '[','r','e','s',']'
                  dw 0
-szTagMain       dw '[','m','a','i','n',']'
-                 dw 0
 
 szEmbedProgman  dw 'e','m','b','e','d',':',' ','p','r','o','g','m','a','n','-','l'
                  dw 'a','y','e','r','e','d',' ','a','n','c','h','o','r'
@@ -271,54 +267,9 @@ szReloadOk      dw 'r','e','l','o','a','d','-','o','k'
                  dw 0
 szNoImage       dw 'n','o',' ','i','m','a','g','e',' ','l','o','a','d','e','d'
                  dw 0
-szProbeGdip     dw 'p','r','o','b','e',':',' ','g','d','i','p',' ','o','k'
-                 dw 0
-szProbePreReg   dw 'p','r','o','b','e',':',' ','p','r','e','-','r','e','g'
-                 dw 0
-szProbeLoad     dw 'p','r','o','b','e',':',' ','l','o','a','d',' ','d','o','n','e'
-                 dw 0
-szProbeReg      dw 'p','r','o','b','e',':',' ','r','e','g',' ','d','o','n','e'
-                 dw 0
-szProbeWin      dw 'p','r','o','b','e',':',' ','w','i','n',' ','d','o','n','e'
-                 dw 0
-szProbeEnter    dw 'p','r','o','b','e',':',' ','e','n','t','e','r'
-                 dw 0
-szProbeDpi      dw 'p','r','o','b','e',':',' ','d','p','i',' ','o','k'
-                 dw 0
-szProbeMod      dw 'p','r','o','b','e',':',' ','m','o','d',' ','o','k'
-                 dw 0
-szProbeEnv      dw 'p','r','o','b','e',':',' ','e','n','v',' ','o','k'
-                 dw 0
-szProbeFs2       dw 'p','r','o','b','e',':',' ','f','s','2'
-                 dw 0
-szProbeJoin      dw 'p','r','o','b','e',':',' ','j','o','i','n'
-                 dw 0
-szProbeRmsPath   dw 'p','r','o','b','e',':',' ','r','m','s','-','p','a','t','h'
-                 dw 0
-szProbeRmsRead   dw 'p','r','o','b','e',':',' ','r','m','s','-','r','e','a','d'
-                 dw 0
-szProbePreConv   dw 'p','r','o','b','e',':',' ','r','m','s','-','p','r','e','c','o','n','v'
-                 dw 0
-szProbePreJoin   dw 'p','r','o','b','e',':',' ','r','m','s','-','p','r','e','j','o','i','n'
-                 dw 0
-szProbePostJoin  dw 'p','r','o','b','e',':',' ','r','m','s','-','p','o','s','t','j','o','i','n'
-                 dw 0
-szProbeLifPre    dw 'p','r','o','b','e',':',' ','l','i','f','-','p','r','e'
-                 dw 0
-szProbeLifPost   dw 'p','r','o','b','e',':',' ','l','i','f','-','p','o','s','t'
-                 dw 0
-szProbeRmsConv   dw 'p','r','o','b','e',':',' ','r','m','s','-','c','o','n','v'
-                 dw 0
-szProbePreDpi   dw 'p','r','o','b','e',':',' ','p','r','e','-','d','p','i'
-                 dw 0
 
 szTailFmt       dw ' ','h','r','=','0','x','0','0','0','0','0','0','0','0'
                  dw 0Ah, 0
-szLogFmt        dw '%','0','4','d','-','%','0','2','d','-','%','0','2','d',' ','%'
-                 dw '0','2','d',':','%','0','2','d',':','%','0','2','d',' ','%','s'
-                 dw ' ','%','s',' ','h','r','=','0','x','0','0','0','0','0','0','0'
-                 dw '0'
-                 dw 0
 szResFmt        dw 'u','p','t','i','m','e','=','%','l','u','s',' ','w','s','=','%'
                  dw 'u','M','B',' ','c','o','m','m','i','t','=','%','u','M','B',' '
                  dw 'p','e','a','k','w','s','=','%','u','M','B',' ','h','a','n','d'
@@ -352,59 +303,10 @@ CALLV MACRO fn:REQ, a1, a2, a3, a4
     call fn
 ENDM
 
-; PROBE_STR s —— 把宽字符串缓冲区内容打进日志（调试用）
-PROBE_STR MACRO s
-    push rax
-    push rcx
-    push rdx
-    push r8
-    push r9
-    push rsi
-    push rdi
-    push rax
-    lea rax, s
-    mov g_a2, rax
-    lea rax, szTagMain
-    mov g_a1, rax
-    call LogLine
-    pop rax
-    pop rdi
-    pop rsi
-    pop r9
-    pop r8
-    pop rdx
-    pop rcx
-    pop rax
-ENDM
-
 ; WCHR2 - 写一个宽字符并推进 rdi
 WCHR2 MACRO c:REQ
     mov word ptr [rdi], c
     add rdi, 2
-ENDM
-
-; PROBE str —— 插桩：写一条 [main] 日志。保存/恢复全部易失寄存器，
-; 避免探针本身破坏调用方状态（早期版本因此产生过一串假崩点）。
-PROBE MACRO s
-    mov g_svAX, rax
-    mov g_svCX, rcx
-    mov g_svDX, rdx
-    mov g_svR8, r8
-    mov g_svR9, r9
-    mov g_svSI, rsi
-    mov g_svDI, rdi
-    lea rax, s
-    mov g_a2, rax
-    lea rax, szTagMain
-    mov g_a1, rax
-    call LogLine
-    mov rax, g_svAX
-    mov rcx, g_svCX
-    mov rdx, g_svDX
-    mov r8, g_svR8
-    mov r9, g_svR9
-    mov rsi, g_svSI
-    mov rdi, g_svDI
 ENDM
 
 ; ---------------- 代码 ----------------
@@ -558,31 +460,8 @@ HGdipDrawImageRect PROC                ; 6 参
     ret
 HGdipDrawImageRect ENDP
 
-HWsprintfLog PROC                      ; 10 参（dest, fmt, y,mo,d,h,mi,s, tag, msg）
-    sub rsp, 58h
-    mov rcx, g_a1
-    mov rdx, g_a2
-    mov r8,  g_a3
-    mov r9,  g_a4
-    mov rax, g_a5
-    mov [rsp+20h], rax
-    mov rax, g_a6
-    mov [rsp+28h], rax
-    mov rax, g_a7
-    mov [rsp+30h], rax
-    mov rax, g_a8
-    mov [rsp+38h], rax
-    mov rax, g_a9
-    mov [rsp+40h], rax
-    mov rax, g_a10
-    mov [rsp+48h], rax
-    call wsprintfW
-    add rsp, 58h
-    ret
-HWsprintfLog ENDP
-
 HWsprintfRes PROC                      ; 9 参（dest, fmt, uptime, ws, commit, peak, handles, gdi, user）
-    sub rsp, 50h
+    sub rsp, 48h                ; 20h 影子 + 5×8 栈参 = 48h；48 ≡ 8 → call 点 rsp ≡ 0 ✓（原 50h 会 misalign）
     mov rcx, g_a1
     mov rdx, g_a2
     mov r8,  g_a3
@@ -598,7 +477,7 @@ HWsprintfRes PROC                      ; 9 参（dest, fmt, uptime, ws, commit, 
     mov rax, g_a9
     mov [rsp+40h], rax
     call wsprintfW
-    add rsp, 50h
+    add rsp, 48h
     ret
 HWsprintfRes ENDP
 
@@ -652,14 +531,17 @@ skip_env:
     jz log_noimage
 
     ; 5) 注册类 + 建窗 + 嵌入
+    call RegisterWallpaperClass     ; 先填 g_wndcls（早期漏了这步，cbSize=0 必失败）
     lea rax, g_wndcls
     mov g_a1, rax
     call HRegisterClassEx
-    test eax, eax
+    test ax, ax                  ; ATOM 是 16 位；test eax 可能被高位垃圾误判
     jz fail_exit
     call CreateWallpaperWindow
     test eax, eax
     jz fail_exit
+    mov rax, g_hwnd              ; g_host 必须指向真实窗口：SetTimer 的 owner 决定
+    mov g_host, rax              ; WM_TIMER 去向（原 g_host 恒 0 = 线程定时器，消息到不了 WndProc）
     CALLV EmbedOrFallback, g_hwnd
 
     ; 6) 看门狗
@@ -807,7 +689,8 @@ WndProc ENDP
 ; PaintImage - WM_PAINT
 ; ============================================================
 PaintImage PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
+    push rbx                    ; rbx 非易失，本函数借用存 HDC 需保存
+    sub rsp, 30h                ; 1 push(8) + 48 = 56 ≡ 8 (mod 16)，call 点对齐 ✓
 
 
 
@@ -857,7 +740,8 @@ pi_nopaint:
     lea rax, g_ps
     CALLV EndPaint, g_hwnd, rax
 pi_done:
-    add rsp, 28h
+    add rsp, 30h
+    pop rbx
     ret
 PaintImage ENDP
 
@@ -889,8 +773,9 @@ LoadConfiguredImage ENDP
 ; LoadImageFile(path)
 ; ============================================================
 LoadImageFile PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
-
+    push rsi                    ; rsi/rdi 非易失（x64 Windows ABI），本函数借用需保存
+    push rdi
+    sub rsp, 28h                ; 2 push(16) + 40 = 56 ≡ 8 (mod 16)，call 点对齐 ✓
 
     mov g_pathPtr, rcx
     cmp g_img, 0
@@ -915,6 +800,8 @@ lif_fail:
     xor eax, eax
 lif_done:
     add rsp, 28h
+    pop rdi
+    pop rsi
     ret
 LoadImageFile ENDP
 
@@ -922,7 +809,10 @@ LoadImageFile ENDP
 ; ResolveMediaPath(buf)
 ; ============================================================
 ResolveMediaPath PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
+    push rsi                    ; rsi/rdi/rbx 均非易失，本函数借用需保存
+    push rdi
+    push rbx
+    sub rsp, 30h                ; 3 push(24) + 48 = 72 ≡ 8 → 内部 call 点 rsp ≡ 0 ✓
 
 
 
@@ -1036,7 +926,7 @@ rms_conv2:
     mov rdx, 0
     mov r8, rsi
     mov r9, -1
-    lea rax, g_rmbuf
+    mov rax, g_rmbuf             ; 指针值加载（= 输出缓冲地址）；勿用 lea——g_rmbuf 是指针变量
     mov [rsp+20h], rax
     mov rax, 520
     mov [rsp+28h], rax
@@ -1046,18 +936,20 @@ rms_conv2:
     mov eax, g_readOk
     test eax, eax
     jz rms_empty
-    movzx eax, word ptr g_rmbuf
+    ; ---- 内容检查统一经指针读（调用方可能是 g_path 也可能是 g_want）----
+    mov r10, g_rmbuf
+    movzx eax, word ptr [r10]
     test eax, eax
     jz rms_empty
     ; ---- 相对路径 -> 绝对 ----
-    movzx eax, word ptr g_rmbuf
+    movzx eax, word ptr [r10]
     cmp eax, '\'
     je rms_done
     cmp eax, 'A'
     jb rms_relpath
     cmp eax, 'Z'
     ja rms_relpath
-    movzx ecx, word ptr g_rmbuf[2]
+    movzx ecx, word ptr [r10+2]  ; 第二个宽字符：X:/ 形式冒号在索引 1（字节偏移 2）
     cmp ecx, ':'
     je rms_done
 rms_relpath:
@@ -1077,7 +969,7 @@ rms_fs2next:
     loop rms_fs2
 rms_fs2done:
     add r8, 2
-    lea r9, g_rmbuf
+    mov r9, g_rmbuf              ; 源 = 指针值
 rms_cp2:
     movzx eax, word ptr [r9]
     mov [r8], ax
@@ -1086,7 +978,7 @@ rms_cp2:
     test eax, eax
     jnz rms_cp2
     lea rsi, g_cfg
-    mov rdi, g_rmbuf
+    mov rdi, g_rmbuf             ; 目的 = 指针值
     mov ecx, 260
     rep movsw
     mov word ptr [rdi], 0
@@ -1096,7 +988,10 @@ rms_done:
 rms_empty:
     xor eax, eax
 rms_ret:
-    add rsp, 28h
+    add rsp, 30h
+    pop rbx
+    pop rdi
+    pop rsi
     ret
 ResolveMediaPath ENDP
 
@@ -1167,7 +1062,7 @@ ef_haveDV:
     mov g_parent, rax
     mov rax, g_ldefView
     mov g_defView, rax
-    mov rax, g_progman
+    mov rcx, g_progman          ; FindWallpaperWorkerW 从 rcx 取参（原来错给 rax）
     call FindWallpaperWorkerW
     mov g_workerW, rax
     lea rax, g_pr
@@ -1282,7 +1177,7 @@ AttachToWorkerW PROC
 
 
 
-    mov g_lWorker, r8
+    mov g_lWorker, rdx          ; 调用方 CALLV AttachToWorkerW, g_hwnd, r10 → worker 在 rdx（原错读 r8）
     CALLV GetWindowLongPtrW, g_hwnd, GWL_STYLE
     mov r10, not (WS_POPUP or WS_CAPTION or WS_THICKFRAME)
     and rax, r10
@@ -1637,13 +1532,17 @@ FitToParentOrMonitor ENDP
 ; ============================================================
 FindProgmanEnum PROC
     sub rsp, 28h
+    mov g_cbHwnd, rcx           ; 先保存易失寄存器：后续 GetClassNameW/lstrcmpW 不保证保留 rcx/rdx
+    mov g_cbLParam, rdx
     lea r10, g_scratchW
     CALLV GetClassNameW, rcx, r10, 80
     lea rax, clsProgman
     CALLV lstrcmpW, r10, rax
     test eax, eax
     jnz fpe_next
-    mov [rdx], rcx
+    mov rcx, g_cbLParam
+    mov rax, g_cbHwnd
+    mov [rcx], rax
     xor eax, eax
     jmp fpe_done
 fpe_next:
@@ -1674,16 +1573,18 @@ FindProgman ENDP
 ; ============================================================
 FindWallpaperWorkerWEnum PROC
     sub rsp, 28h
+    mov g_cbHwnd, rcx           ; 先保存：后续 API 调用不保证保留 rcx
     lea r10, g_scratchW
     CALLV GetClassNameW, rcx, r10, 80
     lea rax, clsWorkerW
     CALLV lstrcmpW, r10, rax
     test eax, eax
     jnz fww_next
-    CALLV GetParent, rcx
+    CALLV GetParent, g_cbHwnd
     cmp rax, g_enumProgman
     jne fww_next
-    mov g_enumFound, rcx
+    mov rax, g_cbHwnd
+    mov g_enumFound, rax
     xor eax, eax
     jmp fww_done
 fww_next:
@@ -1709,7 +1610,7 @@ FindWallpaperWorkerW ENDP
 ; ============================================================
 FindWorkerAfterIconWorkerEnum PROC
     sub rsp, 28h                ; x64 调用对齐 + 影子空间
-
+    mov g_cbHwnd, rcx           ; 先保存：后续 API 调用不保证保留 rcx
 
     lea r10, g_scratchW
     CALLV GetClassNameW, rcx, r10, 80
@@ -1717,16 +1618,17 @@ FindWorkerAfterIconWorkerEnum PROC
     CALLV lstrcmpW, r10, rax
     test eax, eax
     jnz fwa_next
-    CALLV GetAncestor, rcx, GA_ROOT
+    CALLV GetAncestor, g_cbHwnd, GA_ROOT
     mov g_lRoot, rax
     lea rax, clsDefView
     CALLV FindWindowExW, g_lRoot, 0, rax, 0
     test rax, rax
     jz fwa_next
-    CALLV GetParent, rcx
+    CALLV GetParent, g_cbHwnd
     cmp rax, g_lRoot
     je fwa_next
-    mov g_enumFound, rcx
+    mov rax, g_cbHwnd
+    mov g_enumFound, rax
     xor eax, eax
     jmp fwa_done
 fwa_next:
@@ -1765,6 +1667,8 @@ WatchdogTick PROC
     call CreateWallpaperWindow
     test eax, eax
     jz wt_done
+    mov rax, g_hwnd              ; 重建后同步 g_host，否则 WM_TIMER 又找不到窗口
+    mov g_host, rax
     CALLV EmbedOrFallback, g_hwnd
     CALLV InvalidateRect, g_hwnd, 0, 0
     jmp wt_done
@@ -1788,40 +1692,40 @@ wt_zorder:
     ; 热切换
     cmp g_locked, 0
     jne wt_snapshot
-    lea rax, g_want
+    lea rcx, g_want              ; ResolveMediaPath 从 rcx 取目标缓冲（原来错给 rax）
     call ResolveMediaPath
     test eax, eax
     jz wt_snapshot
     movzx eax, word ptr g_want
     test eax, eax
     jz wt_snapshot
-    lea rax, g_want
-    lea rax, g_curMedia
-    CALLV lstrcmpW, rax, rax
+    lea rcx, g_want              ; lstrcmpW(want, curMedia)：rcx/rdx 分别给，两个 lea rax 会互相覆盖
+    lea rdx, g_curMedia
+    CALLV lstrcmpW, rcx, rdx
     test eax, eax
     jz wt_snapshot
     movzx eax, word ptr [g_failed]
     test eax, eax
     jz wt_tryload
-    lea rax, g_want
-    lea rax, g_failed
-    CALLV lstrcmpW, rax, rax
+    lea rcx, g_want              ; lstrcmpW(want, failed)
+    lea rdx, g_failed
+    CALLV lstrcmpW, rcx, rdx
     test eax, eax
     jz wt_snapshot
 wt_tryload:
     mov rax, g_img
     mov g_backupImg, rax
     mov g_img, 0
-    lea rax, g_want
+    lea rcx, g_want              ; LoadImageFile 从 rcx 取路径（原来错给 rax）
     call LoadImageFile
     test eax, eax
     jnz wt_loaded
     ; 失败回滚 + 坏路径退避
     mov rax, g_backupImg
     mov g_img, rax
-    lea rax, g_want
-    lea rax, g_failed
-    CALLV lstrcpyW, rax, rax
+    lea rcx, g_failed            ; lstrcpyW(dest=failed, src=want)
+    lea rdx, g_want
+    CALLV lstrcpyW, rcx, rdx
     jmp wt_snapshot
 wt_loaded:
     mov word ptr [g_failed], 0
@@ -1857,7 +1761,10 @@ WatchdogTick ENDP
 ;   行格式：YYYY-MM-DD HH:MM:SS <tag> <msg> hr=0x00000000\n
 ; ============================================================
 LogLine PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
+    push rsi                    ; rsi/rdi/rbx 均非易失（x64 Windows ABI），借用需保存
+    push rdi
+    push rbx
+    sub rsp, 30h                ; 3 push(24) + 48 = 72 ≡ 8 → 内部 call 点 rsp ≡ 0 ✓
     mov rax, g_a1
     mov g_tag, rax
     mov rax, g_a2
@@ -1945,7 +1852,10 @@ ll_lendone:
     call HWriteFile
     CALLV CloseHandle, rbx
 ll_done:
-    add rsp, 28h
+    add rsp, 30h
+    pop rbx
+    pop rdi
+    pop rsi
     ret
 LogLine ENDP
 
@@ -1963,7 +1873,8 @@ cw_loop:
     add rdi, 2
     jmp cw_loop
 cw_done:
-    pop rsi
+    mov word ptr [rdi], 0       ; 必须补终止符：否则 LogLine 的长度循环会数进上一行残留，
+    pop rsi                     ; 把垃圾当行尾一起写进 debug.log（曾产出 "nchor hr=..." 残行）
     ret
 CopyWide ENDP
 
@@ -2038,12 +1949,16 @@ EmbedLog ENDP
 ; WriteEmbedMarker(strategy)
 ; ============================================================
 WriteEmbedMarker PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
+    push rsi                    ; rdi/rsi/rbx 非易失，借用需保存
+    push rdi
+    push rbx
+    sub rsp, 30h                ; 3 push(24) + 48 = 72 ≡ 8 → 内部 call 点 rsp ≡ 0 ✓
 
 
 
 
-    mov g_lStrategy, rcx
+    mov rax, g_a1               ; strategy 经 g_a1 槽传入（勿改成 rcx，3 处调用点都用全局槽）
+    mov g_lStrategy, rax
     lea rax, g_wmbuf
     CALLV lstrcpyW, rax, g_lStrategy
     lea rdi, g_wmbuf
@@ -2097,7 +2012,10 @@ wm_lendone:
     call HWriteFile
     CALLV CloseHandle, rbx
 wm_done:
-    add rsp, 28h
+    add rsp, 30h
+    pop rbx
+    pop rdi
+    pop rsi
     ret
 WriteEmbedMarker ENDP
 
@@ -2105,10 +2023,11 @@ WriteEmbedMarker ENDP
 ; WriteMarkerFile(name)
 ; ============================================================
 WriteMarkerFile PROC
-    sub rsp, 28h                ; x64 调用对齐 + 影子空间
+    push rbx                    ; rbx 非易失，借用存句柄需保存
+    sub rsp, 30h                ; 1 push(8) + 48 = 56 ≡ 8 → 内部 call 点 rsp ≡ 0 ✓
 
 
-    mov g_a1, rcx
+    ; name 经 g_a1 槽传入（勿读 rcx，调用点用全局槽风格）；g_a1 原样交给 HCreateFile
     mov rax, GENERIC_WRITE
     mov g_a2, rax
     mov rax, FILE_SHARE_READ or FILE_SHARE_WRITE
@@ -2138,7 +2057,8 @@ WriteMarkerFile PROC
     call HWriteFile
     CALLV CloseHandle, rbx
 wf_done:
-    add rsp, 28h
+    add rsp, 30h
+    pop rbx
     ret
 WriteMarkerFile ENDP
 
@@ -2174,17 +2094,9 @@ rs_inited:
 rs_fire:
     mov eax, g_now
     mov g_resLast, eax
+    ; ---- 先做完所有 API 调用（CALLV 会摧毁 r9/r10/r11 等易失寄存器）----
     lea rax, g_pmc
     CALLV GetProcessMemoryInfo, g_hSelf, rax, 96
-    mov rax, qword ptr g_pmc[16]                 ; WorkingSetSize
-    shr rax, 20
-    mov r11d, eax
-    mov rax, qword ptr g_pmc[72]                 ; PrivateUsage
-    shr rax, 20
-    mov r10d, eax
-    mov rax, qword ptr g_pmc[8]                  ; PeakWorkingSetSize
-    shr rax, 20
-    mov r9d, eax
     lea rax, g_handles
     CALLV GetProcessHandleCount, g_hSelf, rax
     CALLV GetGuiResources, g_hSelf, GR_GDIOBJECTS
@@ -2195,17 +2107,29 @@ rs_fire:
     sub eax, g_resStart
     xor edx, edx
     mov ecx, 1000
-    div ecx
-    lea rax, g_line
-    mov g_a1, rax
-    lea rax, szResFmt
-    mov g_a2, rax
+    div ecx                      ; eax = uptime 秒
+    mov g_resSec, eax            ; 商存全局：后面读 g_pmc 要复用 rax
+    ; ---- 再取 g_pmc 指标（此后无 API 调用，r11/r10/r9 安全）----
+    mov rax, qword ptr g_pmc[16]                 ; WorkingSetSize
+    shr rax, 20
+    mov r11d, eax
+    mov rax, qword ptr g_pmc[72]                 ; PrivateUsage
+    shr rax, 20
+    mov r10d, eax
+    mov rax, qword ptr g_pmc[8]                  ; PeakWorkingSetSize
+    shr rax, 20
+    mov r9d, eax
+    lea r8, g_resBuf             ; 目的地用独立缓冲（不能是 g_line：LogLine 的输出也在 g_line）
+    mov g_a1, r8
+    lea r8, szResFmt
+    mov g_a2, r8
+    mov eax, g_resSec            ; a3 = uptime 秒
     mov g_a3, rax
-    mov r8d, r11d
+    mov r8d, r11d                ; ws
     mov g_a4, r8
-    mov r8d, r10d
+    mov r8d, r10d                ; commit
     mov g_a5, r8
-    mov r8d, r9d
+    mov r8d, r9d                 ; peakws
     mov g_a6, r8
     mov eax, g_handles
     mov g_a7, rax
@@ -2216,7 +2140,7 @@ rs_fire:
     call HWsprintfRes
     lea rax, szTagRes
     mov g_a1, rax
-    lea rax, g_line
+    lea rax, g_resBuf            ; msg 也指向 g_resBuf（勿用 g_line）
     mov g_a2, rax
     call LogLine
 rs_done:
