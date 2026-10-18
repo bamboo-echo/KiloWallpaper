@@ -1305,9 +1305,9 @@ EnsureWallpaperZOrder PROC
     jz ez_toplevel
     lea rax, g_pcls
     CALLV GetClassNameW, g_lParent, rax, 80
-    lea rax, g_pcls
-    lea rax, clsProgman
-    CALLV lstrcmpW, rax, rax
+    lea rcx, g_pcls             ; 修复：原来两个 lea rax 互相覆盖，lstrcmpW 变成 clsProgman 自比（恒 0）
+    lea rdx, clsProgman
+    CALLV lstrcmpW, rcx, rdx
     test eax, eax
     jnz ez_notProgman
 
@@ -1413,9 +1413,9 @@ ez_wwMissing:
     jmp ez_done
 
 ez_notProgman:
-    lea rax, g_pcls
-    lea rax, clsDefView
-    CALLV lstrcmpW, rax, rax
+    lea rcx, g_pcls             ; 修复：原来两个 lea rax 互相覆盖，lstrcmpW 变成 clsDefView 自比（恒 0）
+    lea rdx, clsDefView
+    CALLV lstrcmpW, rcx, rdx
     test eax, eax
     jnz ez_bottom
     lea rax, clsListView
@@ -1427,8 +1427,10 @@ ez_notProgman:
 ez_haveList:
     test rax, rax
     jz ez_bottom
+    mov r10, rax                ; 修复：先存锚点句柄（原来被 mov rax, g_hwnd 覆盖，SetWindowPos 变成自己插自己=空操作）
     mov rax, g_hwnd
     mov g_a1, rax
+    mov rax, r10
     mov g_a2, rax
     mov rax, 0
     mov g_a3, rax
