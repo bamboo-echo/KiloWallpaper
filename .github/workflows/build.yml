@@ -224,11 +224,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
         shell: pwsh
 
-      - name: 上传产物（先等 5s 避开刚建 release 的上传延迟，失败重试 3 次）
+      - name: 上传产物（等 30s 让新 release 的 CDN 传播，失败重试 5 次）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 30
           $files = @(
             "KiloWallpaper-${{ github.ref_name }}.zip",
             "artifacts\bin-cpp\DynamicWallpaper.exe",
@@ -240,11 +240,14 @@ jobs:
             "artifacts\bin-zig\DynamicWallpaper.exe",
             "artifacts\bin-zig\DynamicWallpaperGuard.exe"
           )
-          for ($i = 1; $i -le 3; $i++) {
-            gh release upload "$env:GITHUB_REF_NAME" @files --clobber
+          # uploads.github.com 对刚创建的 release 有 CDN 传播延迟，实测 3 次×8s
+          # 仍 404；拉到 30s 间隔 × 5 次。清理步骤保证 release 是新的，
+          # 不需要 --clobber（覆盖路径反而多一层删除-重传的不确定性）。
+          for ($i = 1; $i -le 5; $i++) {
+            gh release upload "$env:GITHUB_REF_NAME" @files
             if ($LASTEXITCODE -eq 0) { Write-Output "upload ok"; exit 0 }
-            Write-Output "upload attempt $i failed, retrying..."
-            Start-Sleep -Seconds 8
+            Write-Output "upload attempt $i failed, waiting 30s..."
+            Start-Sleep -Seconds 30
           }
           exit 1
         shell: pwsh
