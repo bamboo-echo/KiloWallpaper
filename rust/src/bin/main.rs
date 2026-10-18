@@ -139,7 +139,18 @@ fn advance_frame() {
             SetTimer(state::HOST_HWND.get(), TIMER_FRAME, delay, None);
             let _ = InvalidateRect(hwnd, None, false);
         }
+        // GIF 帧推进日志（节流：首帧 + 每 60 帧），与 c 版同款——
+        // GIF 路径此前零业务日志，动画是否在走只能靠任务管理器猜。
+        GIF_TICK.set(GIF_TICK.get() + 1);
+        let t = GIF_TICK.get();
+        if t == 1 || t % 60 == 0 {
+            common::log("main", &format!("gif frame={}/{} delay={}ms", t, fc, delay));
+        }
     }
+}
+
+thread_local! {
+    static GIF_TICK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 fn consume_quit() -> bool {
