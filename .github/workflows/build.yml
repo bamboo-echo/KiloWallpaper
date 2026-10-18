@@ -209,7 +209,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete "%GITHUB_REF_NAME%" --yes 2>$null
+          gh release delete "$env:GITHUB_REF_NAME" --yes 2>$null
           exit 0
         shell: pwsh
 
@@ -217,7 +217,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "%GITHUB_REF_NAME%" `
+          gh release create "$env:GITHUB_REF_NAME" `
             --title "KiloWallpaper ${{ github.ref_name }}" `
             --generate-notes `
             --verify-tag
@@ -241,7 +241,7 @@ jobs:
             "artifacts\bin-zig\DynamicWallpaperGuard.exe"
           )
           for ($i = 1; $i -le 3; $i++) {
-            gh release upload "%GITHUB_REF_NAME%" @files --clobber
+            gh release upload "$env:GITHUB_REF_NAME" @files --clobber
             if ($LASTEXITCODE -eq 0) { Write-Output "upload ok"; exit 0 }
             Write-Output "upload attempt $i failed, retrying..."
             Start-Sleep -Seconds 8
