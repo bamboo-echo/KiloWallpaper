@@ -55,6 +55,7 @@ extern GetParent:proc
 extern GetAncestor:proc
 extern GetClassNameW:proc
 extern GetClientRect:proc
+extern GetWindowRect:proc
 extern GetSystemMetrics:proc
 extern BeginPaint:proc
 extern EndPaint:proc
@@ -162,6 +163,11 @@ g_enumFound     qword 0
 g_enumProgman   qword 0
 g_cbHwnd        qword 0          ; EnumWindows 回调入口保存的 rcx（hwnd），防 API 调用后易失寄存器失效
 g_cbLParam      qword 0          ; EnumWindows 回调入口保存的 rdx（lParam）
+g_threshW       dword 0          ; FindWallpaperWorkerW 尺寸阈值：主屏宽×9
+g_threshH       dword 0          ; FindWallpaperWorkerW 尺寸阈值：主屏高×9
+g_fwwPrev       qword 0          ; FindWindowExW 子窗口遍历游标
+g_fwwCur        qword 0          ; FindWallpaperWorkerW 当前候选
+g_fwwRect       byte 32 dup (0)  ; FindWallpaperWorkerW 的 GetWindowRect 缓冲
 g_msg           byte 64 dup (0)
 g_wndcls        byte 88 dup (0)
 g_scratchW      word 32 dup (0)
@@ -619,8 +625,8 @@ CreateWallpaperWindow PROC
     mov g_a2, rax
     mov rax, 0
     mov g_a3, rax
-    mov eax, WS_POPUP or WS_VISIBLE
-    mov g_a4, rax
+    mov eax, WS_POPUP            ; 对齐 C++：创建时不可见，嵌入时经 SWP_SHOWWINDOW 显示，
+    mov g_a4, rax                ; 避免启动瞬间全屏黑窗闪一下
     mov rax, 0
     mov g_a5, rax
     mov rax, 0
@@ -713,8 +719,8 @@ PaintImage PROC
     mov eax, dword ptr g_rc[8]
     sub eax, dword ptr g_rc[0]
     mov r11d, eax
-    mov eax, dword ptr g_rc[24]
-    sub eax, dword ptr g_rc[16]
+    mov eax, dword ptr g_rc[12]                 ; bottom（RECT=16 字节：left@0/top@4/right@8/bottom@12）
+    sub eax, dword ptr g_rc[4]                  ; top → 高度（原错读 [24]/[16] 越界，高度恒 0）
     mov r10d, eax
     mov rax, g_lGfx
     mov g_a1, rax
@@ -1051,9 +1057,9 @@ ef_haveDV:
     or rax, WS_CHILD or WS_VISIBLE
     CALLV SetWindowLongPtrW, g_hwnd, GWL_STYLE, rax
     CALLV GetWindowLongPtrW, g_hwnd, GWL_EXSTYLE
-    or rax, WS_EX_LAYERED or WS_EX_NOACTIVATE
-    and rax, not WS_EX_TOPMOST
-    CALLV SetWindowLongPtrW, g_hwnd, GWL_EXSTYLE, rax
+    or rax, WS_EX_LAYERED or WS_EX_NOACTIVATE   ; LAYERED 是 raised desktop 上 Progman
+    and rax, not WS_EX_TOPMOST                   ; 子窗口能被 DWM 合成的必要条件（C++ 主路径
+    CALLV SetWindowLongPtrW, g_hwnd, GWL_EXSTYLE, rax   ; 同款；曾误删导致壁纸根本不渲染）
     CALLV SetLayeredWindowAttributes, g_hwnd, 0, 255, LWA_ALPHA
     CALLV SetParent, g_hwnd, g_progman
     test eax, eax
@@ -1070,8 +1076,8 @@ ef_haveDV:
     mov eax, dword ptr g_pr[8]
     sub eax, dword ptr g_pr[0]
     mov g_w, eax
-    mov eax, dword ptr g_pr[24]
-    sub eax, dword ptr g_pr[16]
+    mov eax, dword ptr g_pr[12]                 ; bottom（RECT=16 字节：left@0/top@4/right@8/bottom@12）
+    sub eax, dword ptr g_pr[4]                  ; top → 高度（原错读 [24]/[16] 越界，高度恒 0）
     mov g_h, eax
     cmp g_w, 0
     jg ef_sizeOk
@@ -1193,8 +1199,8 @@ AttachToWorkerW PROC
     mov eax, dword ptr g_rc[8]
     sub eax, dword ptr g_rc[0]
     mov g_w, eax
-    mov eax, dword ptr g_rc[24]
-    sub eax, dword ptr g_rc[16]
+    mov eax, dword ptr g_rc[12]                 ; bottom（RECT=16 字节：left@0/top@4/right@8/bottom@12）
+    sub eax, dword ptr g_rc[4]                  ; top → 高度（原错读 [24]/[16] 越界，高度恒 0）
     mov g_h, eax
     mov eax, g_w
     mov g_winW, eax
@@ -1506,8 +1512,8 @@ FitToParentOrMonitor PROC
     mov eax, dword ptr g_rc[8]
     sub eax, dword ptr g_rc[0]
     mov g_winW, eax
-    mov eax, dword ptr g_rc[24]
-    sub eax, dword ptr g_rc[16]
+    mov eax, dword ptr g_rc[12]                 ; bottom（RECT=16 字节：left@0/top@4/right@8/bottom@12）
+    sub eax, dword ptr g_rc[4]                  ; top → 高度（原错读 [24]/[16] 越界，高度恒 0）
     mov g_winH, eax
     mov rax, g_hwnd
     mov g_a1, rax
@@ -1573,36 +1579,55 @@ FindProgman ENDP
 ; ============================================================
 ; FindWallpaperWorkerW(progman)
 ; ============================================================
-FindWallpaperWorkerWEnum PROC
-    sub rsp, 28h
-    mov g_cbHwnd, rcx           ; 先保存：后续 API 调用不保证保留 rcx
-    lea r10, g_scratchW
-    CALLV GetClassNameW, rcx, r10, 80
-    lea rax, clsWorkerW
-    CALLV lstrcmpW, r10, rax
-    test eax, eax
-    jnz fww_next
-    CALLV GetParent, g_cbHwnd
-    cmp rax, g_enumProgman
-    jne fww_next
-    mov rax, g_cbHwnd
-    mov g_enumFound, rax
-    xor eax, eax
-    jmp fww_done
-fww_next:
-    mov eax, 1
-fww_done:
-    add rsp, 28h
-    ret
-FindWallpaperWorkerWEnum ENDP
-
+; ============================================================
+; FindWallpaperWorkerW(rcx = progman) -> rax = 全屏 WorkerW 子窗口 or 0
+; 对齐 C++ 设计（cpp/desktop.cpp FindWallpaperWorkerW）：枚举 Progman 的
+; WorkerW 子窗口，只认覆盖主屏 ≥90% 的，排除 135x37 之类的小占位窗口。
+; 旧实现用 EnumWindows 枚举顶层窗口再比 GetParent——Progman 的**子** WorkerW
+; 永远不在顶层枚举里，函数恒返回 0：0x052C 产出的全屏 WorkerW 没人压到壁纸
+; 窗口之下，盖住桌面图标层（2026-10-18 实测复现，memory 有全程记录）。
+; ============================================================
 FindWallpaperWorkerW PROC
     sub rsp, 28h
     mov g_enumProgman, rcx
-    mov g_enumFound, 0
-    lea rax, FindWallpaperWorkerWEnum
-    CALLV EnumWindows, rax, 0
-    mov rax, g_enumFound
+    ; 阈值 = 主屏尺寸 × 9（候选用 ×10 比较，避开除法）
+    CALLV GetSystemMetrics, SM_CXSCREEN
+    imul eax, eax, 9
+    mov g_threshW, eax
+    CALLV GetSystemMetrics, SM_CYSCREEN
+    imul eax, eax, 9
+    mov g_threshH, eax
+    mov g_fwwPrev, 0                    ; FindWindowExW 游标（0 = 从头开始）
+fww_loop:
+    mov r10, g_enumProgman
+    mov r11, g_fwwPrev
+    lea rax, clsWorkerW
+    CALLV FindWindowExW, r10, r11, rax, 0
+    test rax, rax
+    jz fww_none
+    mov g_fwwCur, rax
+    ; 尺寸过滤：宽×10 ≥ 屏宽×9 且 高×10 ≥ 屏高×9
+    lea r10, g_fwwRect
+    CALLV GetWindowRect, rax, r10
+    mov eax, dword ptr g_fwwRect[8]
+    sub eax, dword ptr g_fwwRect[0]
+    imul eax, eax, 10
+    cmp eax, g_threshW
+    jb fww_next
+    mov eax, dword ptr g_fwwRect[12]
+    sub eax, dword ptr g_fwwRect[4]
+    imul eax, eax, 10
+    cmp eax, g_threshH
+    jb fww_next
+    mov rax, g_fwwCur
+    jmp fww_done
+fww_next:
+    mov rax, g_fwwCur
+    mov g_fwwPrev, rax
+    jmp fww_loop
+fww_none:
+    xor eax, eax
+fww_done:
     add rsp, 28h
     ret
 FindWallpaperWorkerW ENDP
