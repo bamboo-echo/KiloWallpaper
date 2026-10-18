@@ -2025,7 +2025,8 @@ WNum2 ENDP
 ; ============================================================
 EmbedLog PROC
     sub rsp, 28h
-    mov g_a2, rcx
+    mov rax, g_a1          ; 调用方风格：msg 经 g_a1 传入（勿改成 rcx，6 处调用点都用全局槽）
+    mov g_a2, rax
     lea rax, szTagEmbed
     mov g_a1, rax
     call LogLine
