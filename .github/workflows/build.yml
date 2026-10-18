@@ -186,6 +186,10 @@ jobs:
     needs: [build-cpp, build-c, build-rust, build-zig]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
+    # GITHUB_TOKEN 默认只有 contents:read，gh release create 需要写权限。
+    # 最小权限原则：只给本 job 授 contents:write，编译 job 不给。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
