@@ -224,6 +224,8 @@ g_w dword 0
 g_want word 520 dup (0)
 g_wmbuf word 64 dup (0)
 g_written dword 0
+g_exedir word 520 dup (0)          ; exe 目录（含结尾 '\'），start 时算一次
+g_pathbuf word 520 dup (0)         ; 拼接缓冲：g_exedir + 裸文件名（JoinExeDir 输出）
 
 wcName          dw 'D','y','n','a','m','i','c','W','a','l','l','p','a','p','e','r'
                  dw 0
@@ -410,6 +412,44 @@ HCreateFile PROC                       ; 7 参
     ret
 HCreateFile ENDP
 
+; ------------------------------------------------------------
+; JoinExeDir - 裸文件名 → exe 目录下的完整路径
+; 输入：rcx = 裸文件名宽串指针
+; 输出：rax = g_pathbuf（g_exedir + 文件名；g_exedir 含结尾 '\'）
+; 说明：debug.log / wallpaper.embed / wallpaper.quit / wallpaper.graceful
+;       共用。启动时已算好 g_exedir，整个目录随便搬到哪都不会失联，
+;       不再依赖当前工作目录（项目约定，与 ResolveMediaPath 一致）。
+; ------------------------------------------------------------
+JoinExeDir PROC
+    push rsi
+    push rdi
+    lea rsi, g_exedir
+    lea rdi, g_pathbuf
+jed_dir:
+    movzx eax, word ptr [rsi]
+    mov [rdi], ax
+    test eax, eax
+    jz jed_name
+    add rsi, 2
+    add rdi, 2
+    jmp jed_dir
+jed_name:
+    mov rsi, rcx
+jed_n2:
+    movzx eax, word ptr [rsi]
+    mov [rdi], ax
+    test eax, eax
+    jz jed_done
+    add rsi, 2
+    add rdi, 2
+    jmp jed_n2
+jed_done:
+    lea rax, g_pathbuf
+    pop rdi
+    pop rsi
+    ret
+JoinExeDir ENDP
+
 HReadFile PROC                         ; 5 参
     sub rsp, 28h
     mov rcx, g_a1
@@ -500,6 +540,28 @@ start PROC
     mov g_hInst, rax
     CALLV GetCurrentProcess
     mov g_hSelf, rax
+
+    ; 1b) exe 目录（含结尾 '\'）算一次：debug.log / wallpaper.embed /
+    ;     quit 握手全部基于它，不再依赖当前工作目录——目录随便搬到哪
+    ;     都不会失联（项目约定，与 ResolveMediaPath 同一套路）
+    lea rax, g_exedir
+    CALLV GetModuleFileNameW, 0, rax, 520
+    lea rdi, g_exedir
+    lea rsi, g_exedir
+    mov ecx, 260
+ed_find:
+    movzx eax, word ptr [rdi]
+    test eax, eax
+    jz ed_found
+    cmp eax, '\'
+    jne ed_next
+    mov rsi, rdi
+ed_next:
+    add rdi, 2
+    loop ed_find
+ed_found:
+    add rsi, 2
+    mov word ptr [rsi], 0          ; 截到最后一个 '\'（保留），后面拼文件名
 
     ; 2) KW_RES_LOG_MS 环境变量（0=关闭）
     lea rax, szEnvRes
@@ -1682,8 +1744,9 @@ WatchdogTick PROC
     sub rsp, 28h                ; x64 调用对齐 + 影子空间
 
 
-    ; quit 握手
-    lea rax, szQuitName
+    ; quit 握手（完整路径，不依赖 CWD）
+    lea rcx, szQuitName
+    call JoinExeDir
     CALLV GetFileAttributesW, rax
     cmp eax, INVALID_FILE_ATTRIBUTES
     jne wt_quit
@@ -1762,9 +1825,11 @@ wt_loaded:
     call EmbedLog
     jmp wt_snapshot
 wt_quit:
-    lea rax, szQuitName
+    lea rcx, szQuitName
+    call JoinExeDir
     CALLV DeleteFileW, rax
-    lea rax, szGracefulName
+    lea rcx, szGracefulName
+    call JoinExeDir
     mov g_a1, rax
     call WriteMarkerFile
     CALLV PostQuitMessage, 0
@@ -1824,8 +1889,9 @@ LogLine PROC
     call CopyWide
     lea rsi, szTailFmt
     call CopyWide
-    ; 写文件（打开/创建/定位/写/关，与旧版相同）
-    lea rax, szLogName
+    ; 写文件（打开/创建/定位/写/关，与旧版相同；完整路径不依赖 CWD）
+    lea rcx, szLogName
+    call JoinExeDir
     mov g_a1, rax
     mov rax, GENERIC_WRITE
     mov g_a2, rax
@@ -1840,7 +1906,8 @@ LogLine PROC
     call HCreateFile
     cmp rax, INVALID_HANDLE_VALUE
     jne ll_write
-    lea rax, szLogName
+    lea rcx, szLogName
+    call JoinExeDir
     mov g_a1, rax
     mov rax, GENERIC_WRITE
     mov g_a2, rax
@@ -1999,7 +2066,8 @@ wm_len:
 wm_found:
     mov word ptr [rdi], 0Ah
     mov word ptr [rdi+2], 0
-    lea rax, szEmbedName
+    lea rcx, szEmbedName
+    call JoinExeDir
     mov g_a1, rax
     mov rax, GENERIC_WRITE
     mov g_a2, rax
