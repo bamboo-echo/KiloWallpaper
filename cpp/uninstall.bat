@@ -18,11 +18,11 @@ type nul > "%~dp0wallpaper.quit"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$n=0; while($n -lt 40){ if(-not (Get-Process DynamicWallpaper -ErrorAction SilentlyContinue)){ break }; Start-Sleep -Milliseconds 250; $n++ }"
 
 rem ---- 2. + 3. remove Start-up shortcut and Desktop close-script ----
-rem ç”¨ %~dp0 æ˜¾å¼é”šå®šï¼šDesktop/Startup çš„è·¯å¾„å¿…é¡»æ˜¯ç»å¯¹è·¯å¾„ã€‚
-rem æ•™è®­ï¼šæ—§ç‰ˆç”¨è£¸æ–‡ä»¶åï¼ˆç›¸å¯¹è·¯å¾„ï¼‰ï¼Œè€Œæœ¬è„šæœ¬ä» cpp\ è¿è¡Œæ—¶ï¼Œç›¸å¯¹è·¯å¾„
-rem ä¼šè§£ææˆ cpp\å…³é—­å£çº¸.bat â€”â€” æŠŠé¡¹ç›®è‡ªå·±çš„å…³é—­è„šæœ¬å½“æ¡Œé¢å‰¯æœ¬åˆ äº†ã€‚
-rem ç°åœ¨é€šè¿‡ -join ç ç‚¹æ„é€ æ–‡ä»¶åï¼Œå†ç”¨ [Environment]::GetFolderPath æ‹¼ç»å¯¹è·¯å¾„ï¼Œ
-rem ç»ä¸ç¢°ç›¸å¯¹è·¯å¾„ã€‚
+rem ÓÃ %~dp0 ÏÔÊ½Ãª¶¨£ºDesktop/Startup µÄÂ·¾¶±ØĞëÊÇ¾ø¶ÔÂ·¾¶¡£
+rem ½ÌÑµ£º¾É°æÓÃÂãÎÄ¼şÃû£¨Ïà¶ÔÂ·¾¶£©£¬¶ø±¾½Å±¾´Ó cpp\ ÔËĞĞÊ±£¬Ïà¶ÔÂ·¾¶
+rem »á½âÎö³É cpp\¹Ø±Õ±ÚÖ½.bat ¡ª¡ª °ÑÏîÄ¿×Ô¼ºµÄ¹Ø±Õ½Å±¾µ±×ÀÃæ¸±±¾É¾ÁË¡£
+rem ÏÖÔÚÍ¨¹ı -join Âëµã¹¹ÔìÎÄ¼şÃû£¬ÔÙÓÃ [Environment]::GetFolderPath Æ´¾ø¶ÔÂ·¾¶£¬
+rem ¾ø²»ÅöÏà¶ÔÂ·¾¶¡£
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$close=-join [char[]](0x5173,0x95ED,0x58C1,0x7EB8)+'.bat'; $desk=[Environment]::GetFolderPath('Desktop'); if ($desk) { $p=Join-Path $desk $close; if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force; Write-Host ('removed '+$p) } else { Write-Host ('absent  '+$p) } } else { Write-Host ('WARN: Desktop folder not resolvable, skip') }; $lnkName=-join [char[]](0x52A8,0x6001,0x58C1,0x7EB8)+'.lnk'; $st=[Environment]::GetFolderPath('Startup'); if ($st) { $l=Join-Path $st $lnkName; if (Test-Path -LiteralPath $l) { Remove-Item -LiteralPath $l -Force; Write-Host ('removed '+$l) } else { Write-Host ('absent  '+$l) } } else { Write-Host ('WARN: Startup folder not resolvable, skip') }"
 
 echo [OK] stopped and autostart removed. You may now delete this folder.
