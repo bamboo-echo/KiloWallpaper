@@ -23,7 +23,7 @@
 | `wallpaper.h` | 跨模块声明与 GDI+ flat API 垫片 |
 | `d3dplayer.h` | 视频播放器对外接口 |
 
-辅助：`build.bat`（编译）、`关闭壁纸.bat`（优雅关闭）。
+辅助：`build.bat`（编译）、`开启壁纸.bat`（启动）、`关闭壁纸.bat`（优雅关闭）。
 
 ---
 
