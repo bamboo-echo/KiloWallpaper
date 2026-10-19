@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ==================== 四套实现并行编译 ====================
+  # ==================== 五套实现并行编译 ====================
 
   build-cpp:
     name: 编译 cpp
@@ -252,7 +252,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
         shell: pwsh
 
-      - name: 准备上传文件（带语言前缀，四套 exe 同名会互相覆盖）
+      - name: 准备上传文件（带语言前缀，五套 exe 同名会互相覆盖；asm 仅主程序无守护）
         run: |
           New-Item -ItemType Directory -Force -Path upload | Out-Null
           Copy-Item artifacts\bin-cpp\DynamicWallpaper.exe      upload\DynamicWallpaper-cpp.exe

@@ -12,7 +12,7 @@
 | `rust/` | `cargo build --release` | windows crate，只链系统 DLL |
 | `zig/` | `zig build` | 需 MSVC/SDK 环境（vcvars64） |
 
-CI（`.github/workflows/build.yml`）会在每次 push/PR 上并行编译四套，
+CI（`.github/workflows/build.yml`）会在每次 push/PR 上并行编译五套，
 跑 PE 有效性自检，并用 `tools/verify_claims.py` 校验 README 数字。
 
 ## 硬性约定

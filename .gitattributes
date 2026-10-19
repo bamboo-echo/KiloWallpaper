@@ -6,7 +6,8 @@
 * text=auto eol=lf
 
 # Windows 批处理必须 CRLF：cmd.exe 对带标签(goto/label)的 LF 版 .bat 会解析异常。
-# 项目约定：.bat 内只写 ASCII；需要中文时由 PowerShell 用码点生成。
+# 项目约定：.bat 用纯 ASCII 或 GBK 编写（中文 cmd.exe 默认 cp936，
+# UTF-8 无 BOM 会乱码，见 CONTRIBUTING.md）；一律 CRLF 换行。
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
