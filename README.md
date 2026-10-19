@@ -5,7 +5,7 @@
 **下载**：[Releases](https://github.com/bamboo-echo/KiloWallpaper/releases/latest) 提供五套实现的
 即用 exe（主程序 + 守护成对，解压即用，不装任何运行时）。文件名带语言前缀：
 `DynamicWallpaper-cpp.exe` / `-c.exe` / `-rust.exe` / `-zig.exe` / `-asm.exe`。
-自己日常用选 **c 版**（体积最小、CPU 最低）；以 **cpp 版**为参考基准（本文数字由它产出）。
+自己日常用选 **c 版**（视频方案里体积最小、CPU 最低）；以 **cpp 版**为参考基准（本文数字由它产出）。
 换素材：编辑 exe 旁的 `wallpaper.txt` 首行，3 秒内热切换。
 
 用 Win32 原生 API 手写的极简动态壁纸。**播放 2K 视频时只占一个逻辑核的约 2~4%，
@@ -87,7 +87,7 @@ CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 
 | [`cpp/`](cpp/) | C++ | 70.0 KB / 29.0 KB | **99.0 KB** | 本机全功能实测，本文性能数字由它产出 |
 | [`c/`](c/) | C | 41.0 KB / 13.5 KB | 54.5 KB | 本机实测：视频、GIF、热重载、资源快照日志 |
 | [`rust/`](rust/) | Rust | 188.0 KB / 131.5 KB | 319.5 KB | 编译通过，本机播放实测（NV12 DXVA） |
-| [`zig/`](zig/) | Zig | ~631 KB / ~552 KB | ~1.18 MB | 编译通过，本机播放实测；内存比其他三套高约 88 MB，原因见下 |
+| [`zig/`](zig/) | Zig | ~639 KB / ~552 KB | ~1.16 MB | 编译通过，本机播放实测；内存比其他三套高约 88 MB，原因见下 |
 | [`asm/`](asm/) | MASM x64 | 22.0 KB / — | **22.0 KB** | 本机实测：嵌入、热重载、资源快照、退出握手；**静态图渲染在 Win11 24H2+ raised desktop 上不可见**（与 c 版 GDI+ 路径同症状，见下） |
 
 **请以 `cpp/` 为准**：本文「特点一」里的 CPU / 内存数字、目录内的诊断工具链，
@@ -103,7 +103,7 @@ COM 接口怎么手写 vtable、Media Foundation 属性怎么拆包、DirectComp
 ml64 不支持 `invoke`，全部调用手写 x64 调用约定（全局参数槽 + 手写栈布局）。
 范围只保留静态图片壁纸——MF/D3D 播放链在汇编里没有意义，静态图 CPU 精确为 0。
 它是「最小可读的桌面嵌入参考实现」：嵌入层级、0x052C 唤醒、DPI 感知、
-配置热重载、退出握手、`[res]` 资源快照全部都在，单文件 2151 行。
+配置热重载、退出握手、`[res]` 资源快照全部都在，单文件 2178 行。
 
 > **已知限制（2026-10-18 实测）**：asm 与 c 版的 **GDI+ 静态图路径在 Win11 24H2+
 > 的 raised desktop 上不显示画面**（对照实验截图字节级相同：只有图标和系统默认
@@ -277,16 +277,21 @@ uninstall.bat
 
 ## CI
 
-每次 push 到 `main` 与每个 PR 都会跑 [.github/workflows/build.yml](.github/workflows/build.yml)：
+每次 push 到 `main`、每个 PR 以及推 `v*` tag 都会跑
+[.github/workflows/build.yml](.github/workflows/build.yml)：
 
-1. **MSVC 编译**：在 `windows-2022` runner 上直接跑 `cpp\build.bat`，
-   把两个 exe 传成 artifact（别人可下载即用，无需自己装 VS）。
+1. **五套实现并行编译**（`windows-2022` runner）：`cpp\build.bat`、`c\build.bat`、
+   `cargo build --release`（rust）、`zig build`（zig，runner 里现下载官方 0.13.0）、
+   `asm\build.bat`（ml64 + link，零 CRT）。每套产物各自上传为 artifact 并做
+   PE 有效性自检（别人可下载即用，无需自己装工具链）。
 2. **校验 README 数字**：跑 `tools\verify_claims.py`，README 里写的行数与
    二进制体积必须与实际一致，否则 CI 变红。
    —— 这条专门防「改了代码忘了更新文档里的数字」。
-3. **零第三方 action**：GitHub 的 Windows runner 预装了 Visual Studio 2022 与
-   Windows SDK，`build.bat` 自己的 `vswhere` 就能定位工具链，不需要额外的
-   setup action。
+3. **tag 汇总发布**：推 `v*` tag 时下载全部产物，加语言前缀（防四套同名 exe
+   互相覆盖）打包成 zip，创建 GitHub Release。asm 版只有主程序，无守护成对。
+4. **零第三方 action**：只用 checkout / upload-artifact / download-artifact / cache，
+   工具链靠 runner 预装（MSVC 2022、Rust stable、Python、gh CLI）与各 `build.bat`
+   自带的 `vswhere` 定位，不需要额外的 setup action。
 
 > **CI 验证不了什么**：runner 里没有 Explorer 桌面（无 `Progman` / `WorkerW`），
 > 所以「桌面嵌入是否真的生效」CI 无法验证。那部分由 `wallpaper.embed` 策略标记
