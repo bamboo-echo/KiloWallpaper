@@ -69,14 +69,18 @@ zig-out\bin\DynamicWallpaper.exe "D:\videos\my_loop.mp4"
 
 ---
 
-## ⚠️ 验证状态
+## 验证状态
 
-**本机当前未安装 Zig 工具链，因此本实现尚未经过编译验证。** 代码按 Zig 0.13
-语法与 Windows SDK 头文件接口编写，可能存在少量类型/调用约定细节需要按实际
-编译器报错微调（尤其是 `callconv`、HWND 可空性与宏常量）。装好 Zig 后运行
-`zig build` 即可暴露并定位这些问题。
+已在本机编译通过并实测播放（Zig 0.13.0 + MSVC/SDK 环境，
+`zig build -Doptimize=ReleaseFast`）：桌面嵌入、DXVA 硬解（NV12）、
+DirectComposition 呈现、无缝循环、GIF、配置热重载、退出握手均验证正常。
+产物约 639 KB / 552 KB（主程序 / 守护）。
 
-C 版（`c/`）已在本机用 MSVC 完整编译通过；Zig 版与 C 版共享同一套接口语义。
+**已知情况：内存比其他三套高约 88 MB。** 已排查到底：跳过 MF 解码器
+（`KW_NO_READER=1`）提交内存从 301 MB 掉到 28 MB，两块大内存块同时消失；
+MF 属性、D3D 设备参数、COM 生命周期逐项与 C 版比对无区别，差异在 MF 运行时
+内部分配 surface 池的行为上，应用层没有安全的改法。这是对照实现的已知情况，
+不是 bug，也修不动（详见根 README「多语言实现对照」）。
 
 ## 已知限制
 
