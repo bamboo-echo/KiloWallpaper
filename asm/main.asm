@@ -88,6 +88,22 @@ extern GdipCreateFromHDC:proc
 extern GdipDeleteGraphics:proc
 extern GdipDrawImageRectI:proc
 
+; ---------------- 外部函数（视频链路：MF / D3D11 / DXGI / DComp / COM）----------------
+extern CoInitializeEx:proc
+extern CoUninitialize:proc
+extern MFStartup:proc
+extern MFShutdown:proc
+extern MFCreateAttributes:proc
+extern MFCreateMediaType:proc
+extern MFCreateFile:proc
+extern MFCreateSourceReaderFromByteStream:proc
+extern MFCreateDXGIDeviceManager:proc
+extern D3D11CreateDevice:proc
+extern CreateDXGIFactory1:proc
+extern DCompositionCreateDevice:proc
+extern SetProcessWorkingSetSize:proc
+extern GetTickCount64:proc
+
 ; ---------------- 常量 ----------------
 WS_CHILD            equ 040000000h
 WS_VISIBLE          equ 010000000h
@@ -137,6 +153,78 @@ GR_GDIOBJECTS       equ 0
 GR_USEROBJECTS      equ 1
 PER_MONITOR_V2      equ -4
 GA_ROOT             equ 2
+
+; ---------------- 常量（视频链路；数值均由 SDK 头文件探针提取）----------------
+TIMER_FRAME         equ 2
+MF_VERSION_VAL      equ 20070h          ; MF_VERSION = MF_API_VERSION<<16 | MF_SDK_VERSION
+MF_ACCESSMODE_READ  equ 1
+MF_SRCREADER_FIRST_VIDEO equ 0FFFFFFFCh
+MF_SRCREADER_ALL_STREAMS  equ 0FFFFFFFEh
+MF_SRCREADER_MEDIASOURCE  equ 0FFFFFFFFh
+MF_SRCREADERF_EOFS        equ 2          ; 注意是 2 不是 1（mfreadwrite.h 实测）
+D3D11_CREATE_DEVICE_VIDEO_SUPPORT equ 800h
+D3D11_CREATE_DEVICE_BGRA_SUPPORT  equ 20h
+D3D11_SDK_VERSION   equ 7
+D3D_DRIVER_TYPE_HARDWARE equ 1
+D3D11_USAGE_DEFAULT   equ 0
+D3D11_CPU_ACCESS_FLAG equ 0
+DXGI_FORMAT_NV12    equ 67h
+DXGI_FORMAT_B8G8R8A8_UNORM equ 57h
+DXGI_USAGE_RENDER_TARGET_OUTPUT equ 20h
+DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL equ 3
+DXGI_ALPHA_MODE_IGNORE equ 3             ; 注意是 3 不是 0（dxgi.h 实测）
+D3D11_VPIV_DIMENSION_TEXTURE2D equ 1
+D3D11_VPOV_DIMENSION_TEXTURE2D equ 1
+VT_I8               equ 14h
+FOURCC_NV12         equ 3231564Eh
+
+; vtable 槽位（SDK C 段扁平 vtbl 提取；C 代码 COMCALL 走的就是这张表。
+; IMF2DBuffer/IMFDXGIBuffer 在 MF 头里是扁平表（Lock2D=3/GetResource=3），
+; 并非从 IMFMediaBuffer 派生——与 C++ 段 ": public IUnknown" 声明一致）
+SLOT_QI                      equ 0
+SLOT_Release                 equ 2
+SLOT_CreateTexture2D         equ 5
+SLOT_UpdateSubresource       equ 48
+SLOT_CreateVideoProcessor    equ 4
+SLOT_CreateVPInputView       equ 8
+SLOT_CreateVPOutputView      equ 9
+SLOT_CreateVPEnumerator      equ 10
+SLOT_VPSetOutputColorSpace   equ 15
+SLOT_VPSetStreamFrameFormat  equ 27
+SLOT_VPSetStreamColorSpace   equ 28
+SLOT_VPSetStreamSourceRect   equ 30
+SLOT_VPSetStreamDestRect     equ 31
+SLOT_VPBlt                   equ 53
+SLOT_SetMultithreadProtected equ 5
+SLOT_CreateSwapChainForComp  equ 24
+SLOT_Present                 equ 8
+SLOT_GetBuffer               equ 9
+SLOT_AttrGetUINT32           equ 7
+SLOT_AttrGetUINT64           equ 8
+SLOT_AttrGetGUID             equ 10
+SLOT_AttrSetUINT32           equ 21
+SLOT_AttrSetGUID             equ 24
+SLOT_AttrSetUnknown          equ 27
+SLOT_SetStreamSelection      equ 4
+SLOT_GetCurrentMediaType     equ 6
+SLOT_SetCurrentMediaType     equ 7
+SLOT_SetCurrentPosition      equ 8
+SLOT_ReadSample              equ 9
+SLOT_GetPresentationAttribute equ 12
+SLOT_ConvertToContiguousBuffer equ 41
+SLOT_BufLock                 equ 3
+SLOT_BufUnlock               equ 4
+SLOT_Lock2D                  equ 3
+SLOT_Unlock2D                equ 4
+SLOT_GetResource             equ 3
+SLOT_GetSubresourceIndex     equ 4
+SLOT_ResetDevice             equ 7
+; DirectComposition（C 版手写 vtbl 实测槽位，dcomp.h C++ 专用无法直接引用）
+SLOT_DCompCommit             equ 3
+SLOT_DCompCreateTarget       equ 6
+SLOT_DCompCreateVisual       equ 7
+SLOT_DCompTargetSetRoot      equ 3
+SLOT_DCompVisualSetContent   equ 15
 
 ; ---------------- 数据 ----------------
 .data
@@ -226,6 +314,280 @@ g_wmbuf word 64 dup (0)
 g_written dword 0
 g_exedir word 520 dup (0)          ; exe 目录（含结尾 '\'），start 时算一次
 g_pathbuf word 520 dup (0)         ; 拼接缓冲：g_exedir + 裸文件名（JoinExeDir 输出）
+
+; ---- 视频链路状态（c/d3dplayer.c 的汇编对应）----
+g_isVideo   dword 0
+g_active    dword 0
+g_upIsNv12  dword 1
+g_vw        dword 0
+g_vh        dword 0
+g_frameMs   dword 33
+g_scW       dword 0
+g_scH       dword 0
+g_hwDecode  dword 0
+g_trimmed   dword 0
+g_loopCount dword 0
+g_loopRetry dword 0
+g_loopProbs dword 0
+g_drawn     dword 0
+g_present   dword 0
+g_locked2d  dword 0
+g_presentLogged dword 0
+g_presentFailN  dword 0
+g_vpbltFailN    dword 0
+g_zerocopyLogged dword 0
+g_rsub      dword 0
+g_len       dword 0
+g_pitch     dword 0
+g_num       dword 0
+g_den       dword 0
+g_hrTmp     dword 0
+g_resetToken dword 0
+g_fl        dword 0                ; D3D11CreateDevice 的 FeatureLevel 出口
+g_pvpos     dword 0
+g_bw        dword 0                ; BuildDrawChain 目标宽
+g_bh        dword 0                ; BuildDrawChain 目标高
+g_tsSec     dword 0
+g_oldIsVideo dword 0
+g_crDxva    dword 0
+
+g_dev       qword 0                ; ID3D11Device
+g_ctx       qword 0                ; ID3D11DeviceContext
+g_swap      qword 0                ; IDXGISwapChain1（Composition）
+g_dcomp     qword 0                ; IDCompositionDevice
+g_target    qword 0                ; IDCompositionTarget
+g_visual    qword 0                ; IDCompositionVisual
+g_vd        qword 0                ; ID3D11VideoDevice
+g_vc        qword 0                ; ID3D11VideoContext
+g_vpe       qword 0                ; ID3D11VideoProcessorEnumerator
+g_vp        qword 0                ; ID3D11VideoProcessor
+g_inView    qword 0                ; VP 输入视图（上传纹理）
+g_outView   qword 0                ; VP 输出视图（交换链后备）
+g_dxm       qword 0                ; IMFDXGIDeviceManager（DXVA）
+g_reader    qword 0                ; IMFSourceReader
+g_upTex     qword 0                ; NV12/RGB32 上传纹理
+g_mt        qword 0                ; ID3D10Multithread
+g_dxgiDev   qword 0                ; IDXGIDevice（DComp 创建用）
+g_fact2     qword 0                ; IDXGIFactory2
+g_bb        qword 0                ; 交换链后备缓冲（建输出视图用）
+g_cur       qword 0                ; IMFMediaType（读格式信息）
+g_attr      qword 0                ; IMFAttributes（建 reader 用）
+g_stream    qword 0                ; IMFByteStream
+g_mt2       qword 0                ; IMFMediaType（协商输出类型）
+g_crReader  qword 0                ; CreateReader 出口
+g_nreader   qword 0                ; 循环重建 reader 中转
+g_sample    qword 0                ; IMFSample
+g_buf       qword 0                ; IMFMediaBuffer
+g_dxb       qword 0                ; IMFDXGIBuffer
+g_b2d       qword 0                ; IMF2DBuffer
+g_tmpTex    qword 0                ; 零拷贝路径的解码纹理
+g_tmpView   qword 0                ; 零拷贝路径的临时输入视图
+g_pix       qword 0                ; Lock 出的像素指针
+g_uvptr     qword 0                ; NV12 UV 平面指针
+g_bltView   qword 0                ; BltVp 入口视图
+g_initHwnd  qword 0                ; D3DInit 入口 hwnd 中转
+g_initPath  qword 0                ; D3DInit 入口 path 中转
+g_crPath    qword 0                ; CreateReader 入口 path 中转
+g_firstSub  qword 0                ; 类型协商首选 subtype GUID
+g_secondSub qword 0                ; 类型协商备选 subtype GUID
+g_flags     dword 0                ; ReadSample flags 出口
+g_ts        qword 0                ; ReadSample 时间戳出口
+g_lastTs    qword 0                ; 最近一帧时间戳（100ns）
+g_duration  qword 0                ; 时长（100ns）
+g_startTick qword 0                ; trim 计时（GetTickCount64）
+g_startWall qword 0                ; 本轮播放起始墙上时钟（ms）
+g_startTs   qword 0                ; 本轮播放起始视频时间戳（100ns）
+g_now64     qword 0                ; D3DPumpFrame 当前 tick
+g_vTarget   qword 0                ; 应播到的视频时间点（100ns）
+g_tsCalc    qword 0                ; eos 日志秒数计算中转
+g_tsRem     qword 0                ; eos 日志余数中转
+g_packed    qword 0                ; GetUINT64 手动拆包中转
+g_vhwnd     qword 0                ; 视频模块绑定的窗口
+g_vpath     word 520 dup (0)       ; 视频路径（循环重建 reader 用）
+g_lmiPath   word 520 dup (0)       ; LoadMediaInto 路径副本
+g_oldPath   word 520 dup (0)       ; 热切换回滚用的旧素材路径
+g_dmsg      word 128 dup (0)       ; DpLog 格式化消息缓冲（勿与 g_line 混用）
+
+; ---- 结构体缓冲（偏移经 cl 探针 offsetof 提取）----
+g_sd1  byte 48 dup (0)             ; DXGI_SWAP_CHAIN_DESC1
+g_td   byte 44 dup (0)             ; D3D11_TEXTURE2D_DESC
+g_cd   byte 40 dup (0)             ; D3D11_VIDEO_PROCESSOR_CONTENT_DESC
+g_ivd  byte 16 dup (0)             ; D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC（FourCC@0!）
+g_ovd  byte 16 dup (0)             ; D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC
+g_vs   byte 72 dup (0)             ; D3D11_VIDEO_PROCESSOR_STREAM（pInputSurface@32）
+g_cs   dword 0                     ; 输入色彩空间（BT.709/16-235）
+g_ocs  dword 0                     ; 输出色彩空间（全量程）
+g_srect byte 16 dup (0)            ; 源矩形
+g_drect byte 16 dup (0)            ; 目标矩形
+g_pv   byte 24 dup (0)             ; PROPVARIANT（vt@0, hVal@8）
+g_subtype byte 16 dup (0)          ; GetGUID 出口
+g_guidNull byte 16 dup (0)         ; SetCurrentPosition 的 GUID_NULL
+g_numtmp word 16 dup (0)           ; WNumDec 倒序缓冲
+
+; ---- GUID（cl 探针 __uuidof/INITGUID 提取，与 C 版注释交叉一致）----
+gi_DcompDev  dd 0C37EA93Ah         ; IID_IDCompositionDevice
+             dw 0E7AAh
+             dw 450Dh
+             db 0B1h,6Fh,97h,46h,0CBh,04h,07h,0F3h
+gi_DxgiFact2 dd 50C83A1Ch          ; IID_IDXGIFactory2
+             dw 0E072h
+             dw 4C48h
+             db 87h,0B0h,36h,30h,0FAh,36h,0A6h,0D0h
+gi_DxgiDev   dd 54EC77FAh          ; IID_IDXGIDevice
+             dw 1377h
+             dw 44E6h
+             db 8Ch,32h,88h,0FDh,5Fh,44h,0C8h,4Ch
+gi_Tex2D     dd 6F15AAF2h          ; IID_ID3D11Texture2D
+             dw 0D208h
+             dw 4E89h
+             db 9Ah,0B4h,48h,95h,35h,0D3h,4Fh,9Ch
+gi_VideoDev  dd 10EC4D5Bh          ; IID_ID3D11VideoDevice
+             dw 975Ah
+             dw 4689h
+             db 0B9h,0E4h,0D0h,0AAh,0C3h,0Fh,0E3h,33h
+gi_VideoCtx  dd 61F21C45h          ; IID_ID3D11VideoContext
+             dw 3C0Eh
+             dw 4A74h
+             db 9Ch,0EAh,67h,10h,0Dh,9Ah,0D5h,0E4h
+gi_D3D10MT   dd 9B7E4E00h          ; IID_ID3D10Multithread
+             dw 342Ch
+             dw 4106h
+             db 0A1h,9Fh,4Fh,27h,04h,0F6h,89h,0F0h
+gi_MfDxgiBuf dd 0E7174CFAh         ; IID_IMFDXGIBuffer
+             dw 1C9Eh
+             dw 48B1h
+             db 88h,66h,62h,62h,26h,0BFh,0C2h,58h
+gi_Mf2DBuf   dd 7DC9D5F9h          ; IID_IMF2DBuffer
+             dw 9ED9h
+             dw 44ECh
+             db 9Bh,0BFh,06h,00h,0BBh,58h,9Fh,0BBh
+ga_ReaderD3DMgr dd 0EC822DA2h      ; MF_SOURCE_READER_D3D_MANAGER
+             dw 0E1E9h
+             dw 4B29h
+             db 0A0h,0D8h,56h,3Ch,71h,9Fh,52h,69h
+ga_HwXforms  dd 0A634A91Ch         ; MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS
+             dw 822Bh
+             dw 41B9h
+             db 0A4h,94h,4Dh,0E4h,64h,36h,12h,0B0h
+ga_MediaTypeVideo dd 73646976h     ; MFMediaType_Video
+             dw 0
+             dw 0010h
+             db 80h,00h,00h,0AAh,00h,38h,9Bh,71h
+ga_MajorType dd 48EBA18Eh          ; MF_MT_MAJOR_TYPE
+             dw 0F8C9h
+             dw 4687h
+             db 0BFh,11h,0Ah,74h,0C9h,0F9h,6Ah,8Fh
+ga_SubType   dd 0F7E34C9Ah         ; MF_MT_SUBTYPE
+             dw 42E8h
+             dw 4714h
+             db 0B7h,4Bh,0CBh,29h,0D7h,2Ch,35h,0E5h
+ga_FrameSize dd 1652C33Dh          ; MF_MT_FRAME_SIZE
+             dw 0D6B2h
+             dw 4012h
+             db 0B8h,34h,72h,03h,08h,49h,0A3h,7Dh
+ga_FrameRate dd 0C459A2E8h         ; MF_MT_FRAME_RATE
+             dw 3D2Ch
+             dw 4E44h
+             db 0B1h,32h,0FEh,0E5h,15h,6Ch,7Bh,0B0h
+ga_Duration  dd 6C990D33h          ; MF_PD_DURATION
+             dw 0BB8Eh
+             dw 477Ah
+             db 85h,98h,0Dh,5Dh,96h,0FCh,0D8h,8Ah
+gv_RGB32     dd 00000016h          ; MFVideoFormat_RGB32
+             dw 0
+             dw 0010h
+             db 80h,00h,00h,0AAh,00h,38h,9Bh,71h
+gv_NV12      dd 3231564Eh          ; MFVideoFormat_NV12
+             dw 0
+             dw 0010h
+             db 80h,00h,00h,0AAh,00h,38h,9Bh,71h
+
+; ---- 视频扩展名表（与 c/media.c IsVideoFile 一致）----
+szExtMp4     dw '.','m','p','4',0
+szExtMov     dw '.','m','o','v',0
+szExtAvi     dw '.','a','v','i',0
+szExtWmv     dw '.','w','m','v',0
+szExtMkv     dw '.','m','k','v',0
+szExtWebm    dw '.','w','e','b','m',0
+szExtM4v     dw '.','m','4','v',0
+extTable     qword szExtMp4
+             qword szExtMov
+             qword szExtAvi
+             qword szExtWmv
+             qword szExtMkv
+             qword szExtWebm
+             qword szExtM4v
+
+; ---- 视频链路日志串 ----
+szTagD3d     dw '[','d','3','d',']'
+             dw 0
+szDevFailed  dw 'd','e','v','i','c','e',' ','f','a','i','l','e','d'
+             dw 0
+szVideoIfacesFailed dw 'v','i','d','e','o',' ','i','f','a','c','e','s',' ','f','a','i','l','e','d'
+             dw 0
+szReaderFailed dw 'r','e','a','d','e','r',' ','f','a','i','l','e','d'
+             dw 0
+szCurTypeFailed dw 'c','u','r',' ','t','y','p','e',' ','f','a','i','l','e','d'
+             dw 0
+szSizeFailed dw 's','i','z','e',' ','f','a','i','l','e','d'
+             dw 0
+szUploadTexFailed dw 'u','p','l','o','a','d',' ','t','e','x',' ','f','a','i','l','e','d'
+             dw 0
+szCompSwapFailed dw 'c','o','m','p',' ','s','w','a','p','c','h','a','i','n',' ','f','a','i','l','e','d'
+             dw 0
+szDcompQi    dw 'd','c','o','m','p',':',' ','q','i',' ','d','x','g','i','d','e','v','i','c','e'
+             dw 0
+szDcompCreate dw 'd','c','o','m','p',':',' ','c','r','e','a','t','e',' ','d','e','v','i','c','e'
+             dw 0
+szDcompTarget dw 'd','c','o','m','p',':',' ','c','r','e','a','t','e',' ','t','a','r','g','e','t'
+             dw 0
+szDcompVisual dw 'd','c','o','m','p',':',' ','c','r','e','a','t','e',' ','v','i','s','u','a','l'
+             dw 0
+szDcompContent dw 'd','c','o','m','p',':',' ','s','e','t',' ','c','o','n','t','e','n','t'
+             dw 0
+szDcompCommit dw 'd','c','o','m','p',':',' ','c','o','m','m','i','t'
+             dw 0
+szSwapchainDcomp dw 's','w','a','p','c','h','a','i','n',':',' ','d','c','o','m','p','-','m','o','d','e','l'
+             dw 0
+szVpFailed   dw 'v','p',' ','f','a','i','l','e','d'
+             dw 0
+szViewFailed dw 'v','i','e','w',' ','f','a','i','l','e','d'
+             dw 0
+szFirstPresent dw 'f','i','r','s','t',' ','p','r','e','s','e','n','t'
+             dw 0
+szPresentFailed dw 'p','r','e','s','e','n','t',' ','f','a','i','l','e','d'
+             dw 0
+szVpbltFailed dw 'v','p','b','l','t',' ','f','a','i','l','e','d'
+             dw 0
+szReadsampleFailed dw 'r','e','a','d','s','a','m','p','l','e',' ','f','a','i','l','e','d'
+             dw 0
+szLoopReaderRebuilt dw 'l','o','o','p',':',' ','r','e','a','d','e','r',' ','r','e','b','u','i','l','t'
+             dw 0
+szLoopRebuildFailed dw 'l','o','o','p',' ','r','e','b','u','i','l','d',' ','f','a','i','l','e','d'
+             dw 0
+szZerocopyPath dw 'f','r','a','m','e',':',' ','z','e','r','o','c','o','p','y',' ','p','a','t','h'
+             dw 0
+szD3dFail    dw 'd','3','d'
+             dw 0
+szInitOk     dw 'i','n','i','t',' ','o','k',' '
+             dw 0
+szMs         dw 'm','s',' '
+             dw 0
+szNv12       dw 'N','V','1','2'
+             dw 0
+szRgb32      dw 'R','G','B','3','2'
+             dw 0
+szDxva       dw 'D','X','V','A'
+             dw 0
+szSoft       dw 's','o','f','t'
+             dw 0
+szEosTs      dw 'e','o','s',' ','t','s','='
+             dw 0
+szEosLoop    dw ' ','l','o','o','p','='
+             dw 0
+szEosProbs   dw ' ','(','s','e','e','k','/','r','e','a','d','e','r',' ','p','r','o','b','l','e','m','s',')'
+             dw 0
+szEosOk      dw 0
 
 wcName          dw 'D','y','n','a','m','i','c','W','a','l','l','p','a','p','e','r'
                  dw 0
@@ -593,8 +955,12 @@ skip_env:
     test eax, eax
     jnz fail_exit
 
-    ; 4) 读配置加载素材
-    call LoadConfiguredImage
+    ; 3b) COM + Media Foundation 启动（视频链路；静态图路径无开销）
+    CALLV CoInitializeEx, 0, 0
+    CALLV MFStartup, MF_VERSION_VAL, 0
+
+    ; 4) 读配置加载素材（视频只记路径，等窗口就绪）
+    call LoadConfiguredMedia
     test eax, eax
     jz log_noimage
 
@@ -612,8 +978,28 @@ skip_env:
     mov g_host, rax              ; WM_TIMER 去向（原 g_host 恒 0 = 线程定时器，消息到不了 WndProc）
     CALLV EmbedOrFallback, g_hwnd
 
-    ; 6) 看门狗
+    ; 5b) 视频：窗口就绪后用 D3D11 播放器硬解播放（DXVA + 无缝循环）
+    cmp g_isVideo, 0
+    je sv_done
+    mov rcx, g_hwnd
+    lea rdx, g_path
+    call D3DInit
+    test eax, eax
+    jnz sv_done
+    lea rax, szD3dFail
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    call D3DShutdown
+    CALLV MFShutdown
+    CALLV CoUninitialize
+    CALLV GdiplusShutdown, g_token
+    CALLV ExitProcess, 1
+sv_done:
+
+    ; 6) 看门狗 + 帧定时器（视频高频泵帧）
     CALLV SetTimer, g_host, TIMER_WATCHDOG, WATCHDOG_MS, 0
+    call StartFrameTimer
 
     ; 7) 首帧 + 消息循环
     CALLV InvalidateRect, g_hwnd, 0, 0
@@ -631,6 +1017,10 @@ msg_end:
 
     ; 8) 清理
     CALLV KillTimer, g_host, TIMER_WATCHDOG
+    CALLV KillTimer, g_host, TIMER_FRAME
+    call D3DShutdown
+    CALLV MFShutdown
+    CALLV CoUninitialize
     CALLV GdiplusShutdown, g_token
     CALLV ExitProcess, 0
 
@@ -638,6 +1028,8 @@ log_noimage:
     lea rax, szNoImage
     mov g_a1, rax
     call EmbedLog
+    CALLV MFShutdown
+    CALLV CoUninitialize
     CALLV GdiplusShutdown, g_token
     CALLV ExitProcess, 1
 
@@ -737,7 +1129,13 @@ wp_paint:
     xor eax, eax
     jmp wp_done
 wp_timer:
+    cmp r8, TIMER_FRAME           ; r8 = wParam（timer id）
+    je wp_frame
     call WatchdogTick
+    xor eax, eax
+    jmp wp_done
+wp_frame:
+    call AdvanceFrame
     xor eax, eax
     jmp wp_done
 wp_display:
@@ -760,9 +1158,16 @@ PaintImage PROC
     push rbx                    ; rbx 非易失，本函数借用存 HDC 需保存
     sub rsp, 30h                ; 1 push(8) + 48 = 56 ≡ 8 (mod 16)，call 点对齐 ✓
 
-
-
-
+    ; 视频：D3D 交换链常驻呈现整个客户区，GDI 不参与；
+    ; 循环 seek 期间画面保留在交换链上，无空窗、无闪屏
+    cmp g_isVideo, 0
+    je pi_image
+    lea rax, g_ps
+    CALLV BeginPaint, g_hwnd, rax
+    lea rax, g_ps
+    CALLV EndPaint, g_hwnd, rax
+    jmp pi_done
+pi_image:
     cmp g_img, 0
     je pi_nopaint
     lea rax, g_rc
@@ -814,28 +1219,50 @@ pi_done:
 PaintImage ENDP
 
 ; ============================================================
-; LoadConfiguredImage
+; LoadConfiguredMedia
+;   解析 wallpaper.txt → 视频：记路径等窗口就绪后 D3DInit；
+;   图片：立即加载（LoadImageFile 内部同步 g_curMedia）
 ; ============================================================
-LoadConfiguredImage PROC
+LoadConfiguredMedia PROC
     sub rsp, 28h                ; x64 调用对齐 + 影子空间
-
-
     lea rcx, g_path
     call ResolveMediaPath
     test eax, eax
-    jz lci_done0
+    jz lcm_done0
+    movzx eax, word ptr g_path
+    test eax, eax
+    jz lcm_done0
+    lea rcx, g_path
+    call IsVideoFile
+    test eax, eax
+    jz lcm_image
+    ; ---- 视频：记录路径与 g_curMedia，图片留空（D3DInit 在嵌窗后）----
+    mov g_isVideo, 1
+    lea rdi, g_vpath
+    lea rsi, g_path
+    mov ecx, 519
+    rep movsw
+    mov word ptr [rdi], 0
+    lea rdi, g_curMedia
+    lea rsi, g_path
+    mov ecx, 259
+    rep movsw
+    mov word ptr [rdi], 0
+    mov eax, 1
+    jmp lcm_done
+lcm_image:
     lea rcx, g_path
     call LoadImageFile
     test eax, eax
-    jz lci_done0
+    jz lcm_done0
     mov eax, 1
-    jmp lci_done
-lci_done0:
+    jmp lcm_done
+lcm_done0:
     xor eax, eax
-lci_done:
+lcm_done:
     add rsp, 28h
     ret
-LoadConfiguredImage ENDP
+LoadConfiguredMedia ENDP
 
 ; ============================================================
 ; LoadImageFile(path)
@@ -1760,6 +2187,11 @@ WatchdogTick PROC
     mov rax, g_hwnd              ; 重建后同步 g_host，否则 WM_TIMER 又找不到窗口
     mov g_host, rax
     CALLV EmbedOrFallback, g_hwnd
+    cmp g_isVideo, 0
+    je wt_norebind
+    mov rcx, g_hwnd              ; 新窗口句柄 → 视频绘制链换目标
+    call D3DSetWindow
+wt_norebind:
     CALLV InvalidateRect, g_hwnd, 0, 0
     jmp wt_done
 wt_alive:
@@ -1775,6 +2207,10 @@ wt_alive:
     jmp wt_zorder
 wt_reembed:
     CALLV EmbedOrFallback, g_hwnd
+    cmp g_isVideo, 0
+    je wt_done
+    mov rcx, g_hwnd              ; 重嵌入后确保视频仍绑定当前窗口（同句柄时空转）
+    call D3DSetWindow
     jmp wt_done
 wt_zorder:
     CALLV FitToParentOrMonitor, g_hwnd
@@ -1803,23 +2239,32 @@ wt_zorder:
     test eax, eax
     jz wt_snapshot
 wt_tryload:
-    mov rax, g_img
-    mov g_backupImg, rax
-    mov g_img, 0
-    lea rcx, g_want              ; LoadImageFile 从 rcx 取路径（原来错给 rax）
-    call LoadImageFile
+    ; 备份旧素材（回滚用），按媒体类型分发加载
+    lea rcx, g_oldPath
+    lea rdx, g_curMedia
+    CALLV lstrcpyW, rcx, rdx
+    mov eax, g_isVideo
+    mov g_oldIsVideo, eax
+    lea rcx, g_want              ; LoadMediaInto 从 rcx 取路径
+    call LoadMediaInto
     test eax, eax
     jnz wt_loaded
-    ; 失败回滚 + 坏路径退避
-    mov rax, g_backupImg
-    mov g_img, rax
-    lea rcx, g_failed            ; lstrcpyW(dest=failed, src=want)
+    ; 失败回滚 + 坏路径退避（对齐 C 版：重载旧素材）
+    lea rcx, g_failed
     lea rdx, g_want
     CALLV lstrcpyW, rcx, rdx
+    movzx eax, word ptr [g_oldPath]
+    test eax, eax
+    jz wt_snapshot
+    lea rcx, g_oldPath
+    call LoadMediaInto
     jmp wt_snapshot
 wt_loaded:
     mov word ptr [g_failed], 0
+    call StartFrameTimer          ; 视频↔图片互切必须重设帧定时器
+    CALLV FitToParentOrMonitor, g_hwnd
     CALLV InvalidateRect, g_hwnd, 0, 0
+    CALLV EnsureWallpaperZOrder, g_hwnd
     lea rax, szReloadOk
     mov g_a1, rax
     call EmbedLog
@@ -1847,10 +2292,7 @@ WatchdogTick ENDP
 ; ============================================================
 ; LogLine - 追加一行到 debug.log（纯手工拼串，不用 wsprintfW 变参）
 ;   行格式：YYYY-MM-DD HH:MM:SS <tag> <msg> hr=0x00000000\n
-; ============================================================
-; ============================================================
-; LogLine - 追加一行到 debug.log（纯手工拼串，不用 wsprintfW 变参）
-;   行格式：YYYY-MM-DD HH:MM:SS <tag> <msg> hr=0x00000000\n
+;   g_a3 = hr 真实值；= -1 时用固定 hr=0x00000000 尾（旧调用方）
 ; ============================================================
 LogLine PROC
     push rsi                    ; rsi/rdi/rbx 均非易失（x64 Windows ABI），借用需保存
@@ -1887,8 +2329,25 @@ LogLine PROC
     WCHR2 ' '
     mov rsi, g_lmsg
     call CopyWide
+    ; hr 尾：真实值（g_a3 != -1）或固定 0
+    mov rax, g_a3
+    cmp rax, -1
+    je ll_fixed
+    WCHR2 ' '
+    WCHR2 'h'
+    WCHR2 'r'
+    WCHR2 '='
+    WCHR2 '0'
+    WCHR2 'x'
+    mov ecx, dword ptr g_a3
+    call WHex8
+    WCHR2 0Ah
+    mov word ptr [rdi], 0       ; 必须补终止符：否则 ll_len 数进上一行残留（曾产出 "anchor hr=..." 残行）
+    jmp ll_hrout
+ll_fixed:
     lea rsi, szTailFmt
     call CopyWide
+ll_hrout:
     ; 写文件（打开/创建/定位/写/关，与旧版相同；完整路径不依赖 CWD）
     lea rcx, szLogName
     call JoinExeDir
@@ -2034,6 +2493,7 @@ EmbedLog PROC
     mov g_a2, rax
     lea rax, szTagEmbed
     mov g_a1, rax
+    mov g_a3, -1           ; 固定 hr 尾（无真实 hr）
     call LogLine
     add rsp, 28h
     ret
@@ -2237,10 +2697,2136 @@ rs_fire:
     mov g_a1, rax
     lea rax, g_resBuf            ; msg 也指向 g_resBuf（勿用 g_line）
     mov g_a2, rax
+    mov g_a3, -1                 ; 固定 hr 尾
     call LogLine
 rs_done:
     add rsp, 28h
     ret
 LogResourceSnapshot ENDP
+
+; ============================================================
+; 视频播放链路 —— c/d3dplayer.c（703 行）的纯 MASM 移植
+;
+;   管线：MF SourceReader（DXVA 硬解优先）→ NV12/RGB32
+;         → D3D11 VideoProcessor（NV12→RGB + cover 缩放）
+;         → Composition 交换链 + DirectComposition 呈现
+;         → EOS 后 SetCurrentPosition(0) 无缝循环（交换链保留帧不闪屏）
+;
+;   COM 调用：ML64 无 C++ 隐式 this，统一走 CC0..CC6 助手
+;   （g_a1=对象, g_a2=槽位, g_a3..=参数 → [obj]→lpVtbl→call）。
+;   槽位/偏移/GUID 全部取自本机 SDK 头文件（C 段扁平 vtbl），
+;   探针程序与交叉验证记录见 2026-10-19 工作日志。
+;
+;   与 C 版的对应关系：
+;     CreateReader      → IMFSourceReader 创建 + DXVA 属性 + 类型协商
+;     BuildDrawChain    → 交换链/DComp/VideoProcessor 全链
+;     D3DInit           → 设备/DXVA/reader/纹理/绘制链
+;     DrawSample        → 零拷贝（IMFDXGIBuffer）+ 系统内存上传双路径
+;     D3DPumpFrame      → 追帧 + 无缝循环
+; ============================================================
+
+; ------------------------------------------------------------
+; CC0..CC6 - COM 虚调用助手
+;   入口：g_a1 = 对象指针, g_a2 = vtable 槽位, g_a3.. = 参数
+;   出口：rax = HRESULT（>=0 成功）
+;   栈布局：sub rsp 量 = 32(影子) + N*8(栈参) + 8(对齐)，即 S=0/1 用 28h，S=2/3 用 38h
+;   （只减 8 会让被调函数的 home slot [rsp+10h] 落在本函数返回地址上——曾致 rip=0 崩溃）
+; ------------------------------------------------------------
+CC0 PROC                          ; 仅 this
+    sub rsp, 28h                  ; 32 影子 + 8 对齐；少了会被 home slot 覆盖返回地址
+    mov rcx, g_a1
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 28h
+    ret
+CC0 ENDP
+
+CC1 PROC                          ; this + 1 参
+    sub rsp, 28h                  ; 32 影子 + 8 对齐；少了会被 home slot 覆盖返回地址
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 28h
+    ret
+CC1 ENDP
+
+CC2 PROC                          ; this + 2 参
+    sub rsp, 28h                  ; 32 影子 + 8 对齐；少了会被 home slot 覆盖返回地址
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov r8,  g_a4
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 28h
+    ret
+CC2 ENDP
+
+CC3 PROC                          ; this + 3 参
+    sub rsp, 28h                  ; 32 影子 + 8 对齐；少了会被 home slot 覆盖返回地址
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov r8,  g_a4
+    mov r9,  g_a5
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 28h
+    ret
+CC3 ENDP
+
+CC4 PROC                          ; this + 4 参（1 个栈参）
+    sub rsp, 28h
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov r8,  g_a4
+    mov r9,  g_a5
+    mov rax, g_a6
+    mov [rsp+20h], rax
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 28h
+    ret
+CC4 ENDP
+
+CC5 PROC                          ; this + 5 参（2 个栈参）
+    sub rsp, 38h                  ; 需 32(影子)+16(2 栈参)=48；入口≡8 → 减量须≡8 mod 16 → 取 56
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov r8,  g_a4
+    mov r9,  g_a5
+    mov rax, g_a6
+    mov [rsp+20h], rax
+    mov rax, g_a7
+    mov [rsp+28h], rax
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 38h
+    ret
+CC5 ENDP
+
+CC6 PROC                          ; this + 6 参（3 个栈参）
+    sub rsp, 38h
+    mov rcx, g_a1
+    mov rdx, g_a3
+    mov r8,  g_a4
+    mov r9,  g_a5
+    mov rax, g_a6
+    mov [rsp+20h], rax
+    mov rax, g_a7
+    mov [rsp+28h], rax
+    mov rax, g_a8
+    mov [rsp+30h], rax
+    mov rax, g_a2
+    mov r11, [rcx]
+    call qword ptr [r11+rax*8]
+    add rsp, 38h
+    ret
+CC6 ENDP
+
+; ------------------------------------------------------------
+; ReleaseClear(rcx = 指针变量的地址) —— 释放并置 0（幂等）
+; ------------------------------------------------------------
+ReleaseClear PROC
+    push rcx                    ; 保存 &指针变量（CC0 会篡改 rcx）→ 存于 [E-8]
+    sub rsp, 20h                ; 8(push)+32=40 ≡ 0 (mod 16)，call 点对齐 ✓
+    mov rax, [rcx]
+    test rax, rax
+    jz rc_done
+    mov g_a1, rax
+    mov g_a2, SLOT_Release
+    call CC0
+    mov rcx, [rsp+20h]          ; 取回 [E-8]（push 槽；恰在影子空间 [rsp,rsp+32) 上界之外，安全）
+    mov qword ptr [rcx], 0
+rc_done:
+    add rsp, 20h
+    pop rcx
+    ret
+ReleaseClear ENDP
+
+; ------------------------------------------------------------
+; HD3D11CreateDevice - 10 参包装（g_a1..g_a10）
+; ------------------------------------------------------------
+HD3D11CreateDevice PROC
+    sub rsp, 58h
+    mov rcx, g_a1
+    mov rdx, g_a2
+    mov r8,  g_a3
+    mov r9,  g_a4
+    mov rax, g_a5
+    mov [rsp+20h], rax
+    mov rax, g_a6
+    mov [rsp+28h], rax
+    mov rax, g_a7
+    mov [rsp+30h], rax
+    mov rax, g_a8
+    mov [rsp+38h], rax
+    mov rax, g_a9
+    mov [rsp+40h], rax
+    mov rax, g_a10
+    mov [rsp+48h], rax
+    call D3D11CreateDevice
+    add rsp, 58h
+    ret
+HD3D11CreateDevice ENDP
+
+; ------------------------------------------------------------
+; HMFCreateFile - 5 参包装（g_a1..g_a5）
+; ------------------------------------------------------------
+HMFCreateFile PROC
+    sub rsp, 28h
+    mov rcx, g_a1
+    mov rdx, g_a2
+    mov r8,  g_a3
+    mov r9,  g_a4
+    mov rax, g_a5
+    mov [rsp+20h], rax
+    call MFCreateFile
+    add rsp, 28h
+    ret
+HMFCreateFile ENDP
+
+; ------------------------------------------------------------
+; WHex8 - 32 位值写 8 位大写十六进制宽字符到 rdi（推进 rdi）
+;   配合 LogLine 的 hr 尾串；内部无调用
+; ------------------------------------------------------------
+WHex8 PROC
+    mov edx, ecx
+    mov r11d, 8
+wh_loop:
+    mov eax, edx
+    shr eax, 28
+    and eax, 0Fh
+    cmp eax, 10
+    jb wh_dig
+    add eax, 'A'-10
+    jmp wh_put
+wh_dig:
+    add eax, '0'
+wh_put:
+    mov [rdi], ax
+    add rdi, 2
+    shl edx, 4
+    dec r11d
+    jnz wh_loop
+    ret
+WHex8 ENDP
+
+; ------------------------------------------------------------
+; WNumDec - 变长十进制宽字符写 rdi（推进 rdi）
+;   倒序生成到 g_numtmp 后正序拷贝；内部无调用
+; ------------------------------------------------------------
+WNumDec PROC
+    xor eax, eax
+    mov qword ptr g_numtmp[0], rax
+    mov qword ptr g_numtmp[8], rax
+    mov qword ptr g_numtmp[16], rax
+    mov qword ptr g_numtmp[24], rax
+    lea r10, g_numtmp
+    add r10, 30                     ; 指向第 16 个 word 槽（倒序写起点）
+    mov eax, ecx
+    test eax, eax
+    jnz wnd_loop
+    sub r10, 2
+    mov word ptr [r10], '0'
+    jmp wnd_copy
+wnd_loop:
+    test eax, eax
+    jz wnd_copy
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    add edx, '0'
+    sub r10, 2
+    mov [r10], dx
+    jmp wnd_loop
+wnd_copy:
+    movzx eax, word ptr [r10]
+    test eax, eax
+    jz wnd_done
+    mov [rdi], ax
+    add rdi, 2
+    add r10, 2
+    jmp wnd_copy
+wnd_done:
+    ret
+WNumDec ENDP
+
+; ------------------------------------------------------------
+; IsVideoFile(rcx = path) -> eax = 1/0
+;   扩展名表与 c/media.c 一致：mp4/mov/avi/wmv/mkv/webm/m4v
+;   大小写不敏感；内部无调用
+; ------------------------------------------------------------
+IsVideoFile PROC
+    push rbx
+    push rsi
+    push rdi
+    sub rsp, 20h                   ; 3 push(24)+32 = 56；8-56 ≡ 0 ✓
+    mov rsi, rcx
+    xor ebx, ebx                   ; 最后一个 '.' 的位置
+ivf_scan:
+    movzx eax, word ptr [rsi]
+    test eax, eax
+    jz ivf_scandone
+    cmp eax, '.'
+    jne ivf_next
+    mov rbx, rsi
+ivf_next:
+    add rsi, 2
+    jmp ivf_scan
+ivf_scandone:
+    test rbx, rbx
+    jz ivf_no
+    lea rdi, extTable
+    mov ecx, 7
+ivf_extloop:
+    mov rdx, [rdi]
+    mov rsi, rbx
+ivf_cmp:
+    movzx eax, word ptr [rsi]
+    movzx r10d, word ptr [rdx]
+    cmp eax, 'A'
+    jb ivf_a1
+    cmp eax, 'Z'
+    ja ivf_a1
+    add eax, 20h
+ivf_a1:
+    cmp r10d, 'A'
+    jb ivf_a2
+    cmp r10d, 'Z'
+    ja ivf_a2
+    add r10d, 20h
+ivf_a2:
+    cmp eax, r10d
+    jne ivf_nextext
+    test eax, eax
+    jz ivf_yes
+    add rsi, 2
+    add rdx, 2
+    jmp ivf_cmp
+ivf_nextext:
+    add rdi, 8
+    dec ecx
+    jnz ivf_extloop
+ivf_no:
+    xor eax, eax
+    jmp ivf_done
+ivf_yes:
+    mov eax, 1
+ivf_done:
+    add rsp, 20h
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+IsVideoFile ENDP
+
+; ------------------------------------------------------------
+; DpLog - 视频链路日志（tag=[d3d]，hr 为真实值）
+;   入口：g_a1 = msg 宽串, g_a2 = hr
+; ------------------------------------------------------------
+DpLog PROC
+    sub rsp, 28h
+    mov rax, g_a2
+    mov g_a3, rax
+    mov rax, g_a1
+    mov g_a2, rax
+    lea rax, szTagD3d
+    mov g_a1, rax
+    call LogLine
+    add rsp, 28h
+    ret
+DpLog ENDP
+
+; ------------------------------------------------------------
+; BuildInitInfo - 拼 "init ok %ux%u %ums %s %s" 到 g_dmsg
+; ------------------------------------------------------------
+BuildInitInfo PROC
+    sub rsp, 28h
+    lea rdi, g_dmsg
+    lea rsi, szInitOk
+    call CopyWide
+    mov ecx, g_vw
+    call WNumDec
+    WCHR2 'x'
+    mov ecx, g_vh
+    call WNumDec
+    WCHR2 ' '
+    mov ecx, g_frameMs
+    call WNumDec
+    lea rsi, szMs
+    call CopyWide
+    cmp g_upIsNv12, 0
+    je bii_rgb
+    lea rsi, szNv12
+    jmp bii_fmt
+bii_rgb:
+    lea rsi, szRgb32
+bii_fmt:
+    call CopyWide
+    WCHR2 ' '
+    cmp g_hwDecode, 0
+    je bii_soft
+    lea rsi, szDxva
+    jmp bii_dec
+bii_soft:
+    lea rsi, szSoft
+bii_dec:
+    call CopyWide
+    mov word ptr [rdi], 0
+    add rsp, 28h
+    ret
+BuildInitInfo ENDP
+
+; ------------------------------------------------------------
+; BuildEosInfo - 拼 "eos ts=%u.%02u loop=%u%s" 到 g_dmsg
+;   （C 版 %.2f 的等价值整数实现，秒.厘秒）
+; ------------------------------------------------------------
+BuildEosInfo PROC
+    sub rsp, 28h
+    lea rdi, g_dmsg
+    lea rsi, szEosTs
+    call CopyWide
+    mov rax, g_lastTs
+    test rax, rax
+    jns bei_a
+    xor eax, eax
+bei_a:
+    mov g_tsCalc, rax
+    xor edx, edx
+    mov ecx, 10000000
+    div rcx                        ; rax = 秒, rdx = 余数(100ns)
+    mov g_tsRem, rdx
+    mov ecx, eax
+    call WNumDec
+    WCHR2 '.'
+    mov rax, g_tsRem
+    xor edx, edx
+    mov ecx, 100000
+    div ecx                        ; eax = 厘秒 (0..99)
+    mov ecx, eax
+    call WNum2
+    lea rsi, szEosLoop
+    call CopyWide
+    mov ecx, g_loopCount
+    call WNumDec
+    cmp g_loopProbs, 0
+    je bei_nosuffix
+    lea rsi, szEosProbs
+    call CopyWide
+    jmp bei_end
+bei_nosuffix:
+    lea rsi, szEosOk
+    call CopyWide
+bei_end:
+    mov word ptr [rdi], 0
+    add rsp, 28h
+    ret
+BuildEosInfo ENDP
+
+; ------------------------------------------------------------
+; CreateReader(rcx = path, rdx = useDxva) -> rax = IMFSourceReader or 0
+;   DXVA 模式：RGB32 优先（强制转换 MFT 把 GPU 纹理下系统内存），
+;     NV12 备选；软解模式反过来。
+;   中文路径必须走 MFCreateFile 字节流（FromURL 实测解析异常）。
+; ------------------------------------------------------------
+CreateReader PROC
+    sub rsp, 28h
+    mov g_crPath, rcx
+    mov g_crDxva, edx
+    lea rax, g_attr
+    CALLV MFCreateAttributes, rax, 4
+    test eax, eax
+    js cr_fail0
+    cmp g_attr, 0
+    je cr_fail0
+    cmp g_crDxva, 0
+    je cr_nodxva
+    cmp g_dxm, 0
+    je cr_nodxva
+    mov rax, g_attr
+    mov g_a1, rax
+    lea rax, ga_ReaderD3DMgr
+    mov g_a2, SLOT_AttrSetUnknown
+    mov g_a3, rax
+    mov rax, g_dxm
+    mov g_a4, rax
+    call CC2
+    mov rax, g_attr
+    mov g_a1, rax
+    lea rax, ga_HwXforms
+    mov g_a2, SLOT_AttrSetUINT32
+    mov g_a3, rax
+    mov rax, 1
+    mov g_a4, rax
+    call CC2
+cr_nodxva:
+    mov rax, MF_ACCESSMODE_READ
+    mov g_a1, rax
+    xor eax, eax
+    mov g_a2, rax                   ; MF_OPENMODE_FAIL_IF_NOT_EXIST = 0
+    mov g_a3, rax                   ; MF_FILEFLAGS_NONE = 0
+    mov rax, g_crPath
+    mov g_a4, rax
+    lea rax, g_stream
+    mov g_a5, rax
+    call HMFCreateFile
+    test eax, eax
+    js cr_fail0
+    cmp g_stream, 0
+    je cr_fail0
+    mov rax, g_stream
+    mov rcx, rax
+    mov rdx, g_attr
+    lea r8, g_crReader
+    call MFCreateSourceReaderFromByteStream
+    mov g_hrTmp, eax
+    lea rcx, g_stream
+    call ReleaseClear
+    lea rcx, g_attr
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    js cr_fail0
+    cmp g_crReader, 0
+    je cr_fail0
+    mov rax, g_crReader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_ALL_STREAMS
+    mov g_a2, SLOT_SetStreamSelection
+    mov g_a3, rax
+    mov g_a4, 0
+    call CC2
+    mov rax, g_crReader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_FIRST_VIDEO
+    mov g_a2, SLOT_SetStreamSelection
+    mov g_a3, rax
+    mov rax, 1
+    mov g_a4, rax
+    call CC2
+    ; 首选/备选 subtype
+    cmp g_crDxva, 0
+    je cr_softfirst
+    lea rax, gv_RGB32
+    mov g_firstSub, rax
+    lea rax, gv_NV12
+    mov g_secondSub, rax
+    jmp cr_havesubs
+cr_softfirst:
+    lea rax, gv_NV12
+    mov g_firstSub, rax
+    lea rax, gv_RGB32
+    mov g_secondSub, rax
+cr_havesubs:
+    ; ---- 首选类型 ----
+    lea rax, g_mt2
+    CALLV MFCreateMediaType, rax
+    test eax, eax
+    js cr_relreader
+    cmp g_mt2, 0
+    je cr_relreader
+    mov rax, g_mt2
+    mov g_a1, rax
+    lea rax, ga_MajorType
+    mov g_a2, SLOT_AttrSetGUID
+    mov g_a3, rax
+    lea rax, ga_MediaTypeVideo
+    mov g_a4, rax
+    call CC2
+    mov rax, g_mt2
+    mov g_a1, rax
+    lea rax, ga_SubType
+    mov g_a2, SLOT_AttrSetGUID
+    mov g_a3, rax
+    mov rax, g_firstSub
+    mov g_a4, rax
+    call CC2
+    mov rax, g_crReader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_FIRST_VIDEO
+    mov g_a2, SLOT_SetCurrentMediaType
+    mov g_a3, rax
+    mov g_a4, 0
+    mov rax, g_mt2
+    mov g_a5, rax
+    call CC3
+    mov g_hrTmp, eax
+    lea rcx, g_mt2
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    jns cr_ok
+    ; ---- 备选类型 ----
+    lea rax, g_mt2
+    CALLV MFCreateMediaType, rax
+    test eax, eax
+    js cr_relreader
+    cmp g_mt2, 0
+    je cr_relreader
+    mov rax, g_mt2
+    mov g_a1, rax
+    lea rax, ga_MajorType
+    mov g_a2, SLOT_AttrSetGUID
+    mov g_a3, rax
+    lea rax, ga_MediaTypeVideo
+    mov g_a4, rax
+    call CC2
+    mov rax, g_mt2
+    mov g_a1, rax
+    lea rax, ga_SubType
+    mov g_a2, SLOT_AttrSetGUID
+    mov g_a3, rax
+    mov rax, g_secondSub
+    mov g_a4, rax
+    call CC2
+    mov rax, g_crReader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_FIRST_VIDEO
+    mov g_a2, SLOT_SetCurrentMediaType
+    mov g_a3, rax
+    mov g_a4, 0
+    mov rax, g_mt2
+    mov g_a5, rax
+    call CC3
+    mov g_hrTmp, eax
+    lea rcx, g_mt2
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    jns cr_ok
+cr_relreader:
+    lea rcx, g_crReader
+    call ReleaseClear
+cr_fail0:
+    lea rcx, g_attr
+    call ReleaseClear               ; 幂等（早期失败时为 0）
+    xor eax, eax
+    jmp cr_done
+cr_ok:
+    mov rax, g_crReader
+cr_done:
+    add rsp, 28h
+    ret
+CreateReader ENDP
+
+; ------------------------------------------------------------
+; ReleaseDrawChain - 释放交换链/DComp/VP 视图（保 reader/设备）
+; ------------------------------------------------------------
+ReleaseDrawChain PROC
+    sub rsp, 28h
+    lea rcx, g_inView
+    call ReleaseClear
+    lea rcx, g_outView
+    call ReleaseClear
+    lea rcx, g_vp
+    call ReleaseClear
+    lea rcx, g_vpe
+    call ReleaseClear
+    lea rcx, g_visual
+    call ReleaseClear
+    lea rcx, g_target
+    call ReleaseClear
+    lea rcx, g_dcomp
+    call ReleaseClear
+    lea rcx, g_swap
+    call ReleaseClear
+    add rsp, 28h
+    ret
+ReleaseDrawChain ENDP
+
+; ------------------------------------------------------------
+; BuildDrawChain -> eax = 1/0
+;   顺序与 C 版一致：Composition 交换链 → DComp 目标/视觉/提交
+;   → VideoProcessor 枚举器/处理器/输入视图/输出视图 → 矩形+色彩空间。
+;   g_scW/g_scH 仅在全部成功后才提交（失败保持旧值让 PumpFrame 重试）。
+; ------------------------------------------------------------
+BuildDrawChain PROC
+    sub rsp, 28h
+    call ReleaseDrawChain
+    cmp g_dev, 0
+    je bdc_fail
+    cmp g_vd, 0
+    je bdc_fail
+    cmp g_vhwnd, 0
+    je bdc_fail
+    cmp g_vw, 0
+    je bdc_fail
+    ; ---- 目标尺寸（客户区，失败回主屏）----
+    lea rax, g_rc
+    CALLV GetClientRect, g_vhwnd, rax
+    mov eax, dword ptr g_rc[8]
+    sub eax, dword ptr g_rc[0]
+    mov g_bw, eax
+    mov eax, dword ptr g_rc[12]
+    sub eax, dword ptr g_rc[4]
+    mov g_bh, eax
+    cmp g_bw, 0
+    jg bdc_haveSize
+    CALLV GetSystemMetrics, SM_CXSCREEN
+    mov g_bw, eax
+    CALLV GetSystemMetrics, SM_CYSCREEN
+    mov g_bh, eax
+bdc_haveSize:
+    cmp g_bw, 0
+    je bdc_fail
+    cmp g_bh, 0
+    je bdc_fail
+    ; ---- Composition 交换链（FLIP_SEQUENTIAL + AlphaMode IGNORE）----
+    lea rdi, g_sd1
+    xor eax, eax
+    mov ecx, 6
+    rep stosq
+    mov eax, g_bw
+    mov dword ptr g_sd1[0], eax
+    mov eax, g_bh
+    mov dword ptr g_sd1[4], eax
+    mov dword ptr g_sd1[8], DXGI_FORMAT_B8G8R8A8_UNORM
+    mov dword ptr g_sd1[16], 1                 ; SampleDesc.Count
+    mov dword ptr g_sd1[24], DXGI_USAGE_RENDER_TARGET_OUTPUT
+    mov dword ptr g_sd1[28], 2                 ; BufferCount
+    mov dword ptr g_sd1[36], DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL
+    mov dword ptr g_sd1[40], DXGI_ALPHA_MODE_IGNORE
+    lea rax, gi_DxgiFact2
+    lea r10, g_fact2
+    CALLV CreateDXGIFactory1, rax, r10
+    test eax, eax
+    js bdc_fail
+    cmp g_fact2, 0
+    je bdc_fail
+    mov rax, g_fact2
+    mov g_a1, rax
+    mov g_a2, SLOT_CreateSwapChainForComp
+    mov rax, g_dev
+    mov g_a3, rax
+    lea rax, g_sd1
+    mov g_a4, rax
+    mov g_a5, 0
+    lea rax, g_swap
+    mov g_a6, rax
+    call CC4
+    mov g_hrTmp, eax
+    lea rcx, g_fact2
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    js bdc_fail
+    cmp g_swap, 0
+    je bdc_fail
+    ; ---- DComp：设备 → 目标(绑壁纸窗口) → 视觉(内容=交换链) → 提交 ----
+    ; 注意：DCompositionCreateDevice 首参是 IDXGIDevice 对象指针本身（值），不是 &变量
+    ; （曾误传 lea &g_dxgiDev → dcomp 两层解引用把 vtable 指针当函数调用，rip=vtable 数据地址 AV）
+    mov rax, g_dev
+    mov g_a1, rax
+    lea rax, gi_DxgiDev
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_dxgiDev
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js bdc_failqi
+    cmp g_dxgiDev, 0
+    je bdc_failqi
+    mov rax, g_dxgiDev
+    lea r10, gi_DcompDev
+    lea r11, g_dcomp
+    CALLV DCompositionCreateDevice, rax, r10, r11
+    mov g_hrTmp, eax
+    lea rcx, g_dxgiDev
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    js bdc_faildcomp
+    mov rax, g_dcomp
+    mov g_a1, rax
+    mov g_a2, SLOT_DCompCreateTarget
+    mov rax, g_vhwnd
+    mov g_a3, rax
+    mov rax, 1
+    mov g_a4, rax
+    lea rax, g_target
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js bdc_failtarget
+    mov rax, g_dcomp
+    mov g_a1, rax
+    mov g_a2, SLOT_DCompCreateVisual
+    lea rax, g_visual
+    mov g_a3, rax
+    call CC1
+    test eax, eax
+    js bdc_failvisual
+    mov rax, g_visual
+    mov g_a1, rax
+    mov g_a2, SLOT_DCompVisualSetContent
+    mov rax, g_swap
+    mov g_a3, rax
+    call CC1
+    test eax, eax
+    js bdc_failcontent
+    mov rax, g_target
+    mov g_a1, rax
+    mov g_a2, SLOT_DCompTargetSetRoot
+    mov rax, g_visual
+    mov g_a3, rax
+    call CC1
+    test eax, eax
+    js bdc_failroot
+    mov rax, g_dcomp
+    mov g_a1, rax
+    mov g_a2, SLOT_DCompCommit
+    call CC0
+    test eax, eax
+    js bdc_failcommit
+    lea rax, szSwapchainDcomp
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    ; ---- VideoProcessor ----
+    lea rdi, g_cd
+    xor eax, eax
+    mov ecx, 5
+    rep stosq
+    mov dword ptr g_cd[0], 0                   ; PROGRESSIVE
+    mov eax, g_vw
+    mov dword ptr g_cd[12], eax                ; InputWidth
+    mov eax, g_vh
+    mov dword ptr g_cd[16], eax                ; InputHeight
+    mov eax, g_bw
+    mov dword ptr g_cd[28], eax                ; OutputWidth
+    mov eax, g_bh
+    mov dword ptr g_cd[32], eax                ; OutputHeight
+    mov dword ptr g_cd[36], 0                  ; PLAYBACK_NORMAL
+    mov rax, g_vd
+    mov g_a1, rax
+    lea rax, g_cd
+    mov g_a2, SLOT_CreateVPEnumerator
+    mov g_a3, rax
+    lea rax, g_vpe
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js bdc_failvp
+    mov rax, g_vd
+    mov g_a1, rax
+    mov g_a2, SLOT_CreateVideoProcessor
+    mov rax, g_vpe
+    mov g_a3, rax
+    mov g_a4, 0
+    lea rax, g_vp
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js bdc_failvp
+    cmp g_vp, 0
+    je bdc_failvp
+    ; ---- 输入视图（绑定上传纹理；FourCC 必须显式声明否则采样全黑）----
+    lea rdi, g_ivd
+    xor eax, eax
+    mov ecx, 2
+    rep stosq
+    mov eax, g_upIsNv12
+    test eax, eax
+    jz bdc_ivd0
+    mov dword ptr g_ivd[0], FOURCC_NV12
+bdc_ivd0:
+    mov dword ptr g_ivd[4], D3D11_VPIV_DIMENSION_TEXTURE2D
+    mov dword ptr g_ivd[8], 0                  ; MipSlice
+    mov dword ptr g_ivd[12], 0                 ; ArraySlice
+    mov rax, g_vd
+    mov g_a1, rax
+    mov g_a2, SLOT_CreateVPInputView
+    mov rax, g_upTex
+    mov g_a3, rax
+    mov rax, g_vpe
+    mov g_a4, rax
+    lea rax, g_ivd
+    mov g_a5, rax
+    lea rax, g_inView
+    mov g_a6, rax
+    call CC4
+    test eax, eax
+    js bdc_failview
+    ; ---- 输出视图（交换链后备缓冲）----
+    mov rax, g_swap
+    mov g_a1, rax
+    mov g_a2, SLOT_GetBuffer
+    mov g_a3, 0
+    lea rax, gi_Tex2D
+    mov g_a4, rax
+    lea rax, g_bb
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js bdc_failview
+    lea rdi, g_ovd
+    xor eax, eax
+    mov ecx, 2
+    rep stosq
+    mov dword ptr g_ovd[0], D3D11_VPOV_DIMENSION_TEXTURE2D
+    mov rax, g_vd
+    mov g_a1, rax
+    mov g_a2, SLOT_CreateVPOutputView
+    mov rax, g_bb
+    mov g_a3, rax
+    mov rax, g_vpe
+    mov g_a4, rax
+    lea rax, g_ovd
+    mov g_a5, rax
+    lea rax, g_outView
+    mov g_a6, rax
+    call CC4
+    mov g_hrTmp, eax
+    lea rcx, g_bb
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    js bdc_failview
+    cmp g_inView, 0
+    je bdc_failview
+    cmp g_outView, 0
+    je bdc_failview
+    ; ---- 源/目标矩形铺满 + 色彩空间 ----
+    mov dword ptr g_srect[0], 0
+    mov dword ptr g_srect[4], 0
+    mov eax, g_vw
+    mov dword ptr g_srect[8], eax
+    mov eax, g_vh
+    mov dword ptr g_srect[12], eax
+    mov dword ptr g_drect[0], 0
+    mov dword ptr g_drect[4], 0
+    mov eax, g_bw
+    mov dword ptr g_drect[8], eax
+    mov eax, g_bh
+    mov dword ptr g_drect[12], eax
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPSetStreamSourceRect
+    mov rax, g_vp
+    mov g_a3, rax
+    mov g_a4, 0
+    mov rax, 1
+    mov g_a5, rax
+    lea rax, g_srect
+    mov g_a6, rax
+    call CC4
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPSetStreamDestRect
+    mov rax, g_vp
+    mov g_a3, rax
+    mov g_a4, 0
+    mov rax, 1
+    mov g_a5, rax
+    lea rax, g_drect
+    mov g_a6, rax
+    call CC4
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPSetStreamFrameFormat
+    mov rax, g_vp
+    mov g_a3, rax
+    mov g_a4, 0
+    mov g_a5, 0                   ; PROGRESSIVE
+    call CC3
+    ; 输入色彩空间：Usage=0, RGB_Range=0, Matrix=BT.709(bit2), Nominal=16-235(bit4)
+    mov dword ptr g_cs, 14h
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPSetStreamColorSpace
+    mov rax, g_vp
+    mov g_a3, rax
+    mov g_a4, 0
+    lea rax, g_cs
+    mov g_a5, rax
+    call CC3
+    mov dword ptr g_ocs, 0        ; 输出全量程
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPSetOutputColorSpace
+    mov rax, g_vp
+    mov g_a3, rax
+    lea rax, g_ocs
+    mov g_a4, rax
+    call CC2
+    ; ---- 全部成功才提交尺寸 ----
+    mov eax, g_bw
+    mov g_scW, eax
+    mov eax, g_bh
+    mov g_scH, eax
+    mov eax, 1
+    jmp bdc_done
+bdc_failqi:
+    lea rax, szDcompQi
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_faildcomp:
+    lea rax, szDcompCreate
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failtarget:
+    lea rax, szDcompTarget
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failvisual:
+    lea rax, szDcompVisual
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failcontent:
+    lea rax, szDcompContent
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failroot:
+bdc_failcommit:
+    lea rax, szDcompCommit
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failvp:
+    lea rax, szVpFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_failview:
+    lea rax, szViewFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp bdc_fail
+bdc_fail:
+    call ReleaseDrawChain
+    xor eax, eax
+bdc_done:
+    add rsp, 28h
+    ret
+BuildDrawChain ENDP
+
+; ------------------------------------------------------------
+; D3DInit(rcx = hwnd, rdx = videoPath) -> eax = 1/0
+;   内部先 D3DShutdown；设备（VIDEO+BGRA，失败退级 BGRA）→
+;   多线程保护 → video 接口 → DXVA 管理器 → reader → 格式 →
+;   上传纹理 → 绘制链。
+; ------------------------------------------------------------
+D3DInit PROC
+    sub rsp, 28h
+    mov g_initHwnd, rcx
+    mov g_initPath, rdx
+    call D3DShutdown
+    ; g_vpath = path（循环重建 reader 用）
+    mov rsi, g_initPath
+    lea rdi, g_vpath
+    mov ecx, 519
+    rep movsw
+    mov word ptr [rdi], 0
+    mov rax, g_initHwnd
+    mov g_vhwnd, rax
+    ; ---- 1) D3D11 设备（VIDEO_SUPPORT | BGRA_SUPPORT）----
+    mov g_a1, 0
+    mov rax, D3D_DRIVER_TYPE_HARDWARE
+    mov g_a2, rax
+    mov g_a3, 0
+    mov rax, D3D11_CREATE_DEVICE_VIDEO_SUPPORT or D3D11_CREATE_DEVICE_BGRA_SUPPORT
+    mov g_a4, rax
+    mov g_a5, 0
+    mov g_a6, 0
+    mov rax, D3D11_SDK_VERSION
+    mov g_a7, rax
+    lea rax, g_dev
+    mov g_a8, rax
+    lea rax, g_fl
+    mov g_a9, rax
+    lea rax, g_ctx
+    mov g_a10, rax
+    call HD3D11CreateDevice
+    test eax, eax
+    js di_retry
+    cmp g_dev, 0
+    jne di_mt
+di_retry:
+    ; 失败但可能已写出非空对象 → 先释放再退级重试（老驱动无 VIDEO_SUPPORT）
+    lea rcx, g_dev
+    call ReleaseClear
+    lea rcx, g_ctx
+    call ReleaseClear
+    mov g_a4, D3D11_CREATE_DEVICE_BGRA_SUPPORT
+    call HD3D11CreateDevice
+    test eax, eax
+    js di_faildev
+    cmp g_dev, 0
+    je di_faildev
+di_mt:
+    ; ---- 多线程保护（MF 解码工作线程共用 device，否则首帧即 EOS）----
+    mov rax, g_dev
+    mov g_a1, rax
+    lea rax, gi_D3D10MT
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_mt
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_nomt
+    cmp g_mt, 0
+    je di_nomt
+    mov rax, g_mt
+    mov g_a1, rax
+    mov g_a2, SLOT_SetMultithreadProtected
+    mov rax, 1
+    mov g_a3, rax
+    call CC1
+    lea rcx, g_mt
+    call ReleaseClear
+di_nomt:
+    ; ---- video 接口 ----
+    mov rax, g_dev
+    mov g_a1, rax
+    lea rax, gi_VideoDev
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_vd
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_failvideo
+    mov rax, g_ctx
+    mov g_a1, rax
+    lea rax, gi_VideoCtx
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_vc
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_failvideo
+    ; ---- 2) DXVA 共享管理器 ----
+    lea rax, g_resetToken
+    lea r10, g_dxm
+    CALLV MFCreateDXGIDeviceManager, rax, r10
+    test eax, eax
+    js di_nodxm
+    mov rax, g_dxm
+    mov g_a1, rax
+    mov g_a2, SLOT_ResetDevice
+    mov rax, g_dev
+    mov g_a3, rax
+    mov eax, g_resetToken
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    jns di_nodxm
+    lea rcx, g_dxm
+    call ReleaseClear
+di_nodxm:
+    ; ---- 3) 解码器：先 DXVA 硬解，失败退软解 ----
+    lea rcx, g_vpath
+    mov rdx, 1
+    call CreateReader
+    mov g_reader, rax
+    mov g_hwDecode, 1              ; 首次（DXVA）成功 → 硬解标志（对齐 c 版 g_hwDecode=(reader!=NULL)；
+    test rax, rax                  ;   曾误置 0 致日志恒报 soft，且 di_hw1 支路成死代码）
+    jnz di_haveReader
+    ; DXVA 失败 → 退软解（标志清零）
+    lea rcx, g_vpath
+    xor edx, edx
+    call CreateReader
+    mov g_reader, rax
+    mov g_hwDecode, 0
+    test rax, rax
+    jnz di_haveReader
+    lea rax, szReaderFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    call D3DShutdown
+    xor eax, eax
+    jmp di_done
+di_haveReader:
+    ; ---- 4) 输出格式：尺寸/帧率/subtype/时长 ----
+    mov rax, g_reader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_FIRST_VIDEO
+    mov g_a2, SLOT_GetCurrentMediaType
+    mov g_a3, rax
+    lea rax, g_cur
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_failcurtype
+    cmp g_cur, 0
+    je di_failcurtype
+    ; 帧尺寸（GetUINT64 手动拆包：高32=宽 低32=高）
+    mov rax, g_cur
+    mov g_a1, rax
+    lea rax, ga_FrameSize
+    mov g_a2, SLOT_AttrGetUINT64
+    mov g_a3, rax
+    lea rax, g_packed
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_nosize
+    mov rax, g_packed
+    shr rax, 32
+    mov g_vw, eax
+    mov eax, dword ptr g_packed
+    mov g_vh, eax
+di_nosize:
+    ; 帧率
+    mov qword ptr g_packed, 0
+    mov rax, g_cur
+    mov g_a1, rax
+    lea rax, ga_FrameRate
+    mov g_a2, SLOT_AttrGetUINT64
+    mov g_a3, rax
+    lea rax, g_packed
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js di_norate
+    mov rax, g_packed
+    shr rax, 32
+    mov g_num, eax
+    mov eax, dword ptr g_packed
+    mov g_den, eax
+di_norate:
+    ; subtype
+    mov rax, g_cur
+    mov g_a1, rax
+    lea rax, ga_SubType
+    mov g_a2, SLOT_AttrGetGUID
+    mov g_a3, rax
+    lea rax, g_subtype
+    mov g_a4, rax
+    call CC2
+    lea rcx, g_cur
+    call ReleaseClear
+    ; 时长
+    lea rdi, g_pv
+    xor eax, eax
+    mov ecx, 3
+    rep stosq
+    mov rax, g_reader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_MEDIASOURCE
+    mov g_a2, SLOT_GetPresentationAttribute
+    mov g_a3, rax
+    lea rax, ga_Duration
+    mov g_a4, rax
+    lea rax, g_pv
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js di_nodur
+    movzx eax, word ptr g_pv
+    cmp eax, VT_I8
+    jne di_nodur
+    mov rax, qword ptr g_pv[8]
+    mov g_duration, rax
+di_nodur:
+    cmp g_vw, 0
+    je di_failsize
+    cmp g_vh, 0
+    je di_failsize
+    ; upIsNv12 = (subtype == NV12)
+    lea rsi, g_subtype
+    lea rdi, gv_NV12
+    mov ecx, 4
+    repe cmpsd
+    mov g_upIsNv12, 0
+    jne di_notnv12
+    mov g_upIsNv12, 1
+di_notnv12:
+    ; frameMs = 1000*den/num，clamp [10,100]
+    mov eax, g_num
+    test eax, eax
+    jz di_noframems
+    mov eax, g_den
+    test eax, eax
+    jz di_noframems
+    mov eax, g_den
+    xor edx, edx
+    mov ecx, 1000
+    mul ecx
+    div g_num
+    cmp eax, 10
+    jae di_fm1
+    mov eax, 10
+di_fm1:
+    cmp eax, 100
+    jbe di_fm2
+    mov eax, 100
+di_fm2:
+    mov g_frameMs, eax
+di_noframems:
+    ; ---- 5) 上传纹理 ----
+    lea rdi, g_td
+    xor eax, eax
+    mov ecx, 5
+    rep stosq
+    mov dword ptr [rdi], 0
+    mov eax, g_vw
+    mov dword ptr g_td[0], eax
+    mov eax, g_vh
+    mov dword ptr g_td[4], eax
+    mov dword ptr g_td[8], 1                   ; MipLevels
+    mov dword ptr g_td[12], 1                  ; ArraySize
+    mov eax, g_upIsNv12
+    test eax, eax
+    jz di_rgbfmt
+    mov dword ptr g_td[16], DXGI_FORMAT_NV12
+    jmp di_fmtok
+di_rgbfmt:
+    mov dword ptr g_td[16], DXGI_FORMAT_B8G8R8A8_UNORM
+di_fmtok:
+    mov dword ptr g_td[20], 1                  ; SampleDesc.Count
+    mov dword ptr g_td[28], D3D11_USAGE_DEFAULT
+    mov rax, g_dev
+    mov g_a1, rax
+    lea rax, g_td
+    mov g_a2, SLOT_CreateTexture2D
+    mov g_a3, rax
+    mov g_a4, 0
+    lea rax, g_upTex
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js di_failtex
+    cmp g_upTex, 0
+    je di_failtex
+    ; ---- 6) 交换链 + VideoProcessor ----
+    call BuildDrawChain
+    test eax, eax
+    jz di_failchain
+    call BuildInitInfo
+    lea rax, g_dmsg
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    mov g_active, 1
+    CALLV GetTickCount64
+    mov g_startTick, rax
+    mov eax, 1
+    jmp di_done
+di_faildev:
+    lea rax, szDevFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp di_fail
+di_failvideo:
+    lea rax, szVideoIfacesFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp di_fail
+di_failcurtype:
+    lea rax, szCurTypeFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp di_fail
+di_failsize:
+    lea rax, szSizeFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp di_fail
+di_failtex:
+    lea rax, szUploadTexFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp di_fail
+di_failchain:
+    lea rax, szCompSwapFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+di_fail:
+    call D3DShutdown
+    xor eax, eax
+di_done:
+    add rsp, 28h
+    ret
+D3DInit ENDP
+
+; ------------------------------------------------------------
+; BltVp(rcx = 输入视图) -> eax = 1/0
+;   VideoProcessorBlt 合成一帧到交换链后备；失败限频日志
+; ------------------------------------------------------------
+BltVp PROC
+    sub rsp, 28h
+    mov g_bltView, rcx
+    lea rdi, g_vs
+    xor eax, eax
+    mov ecx, 9
+    rep stosq
+    mov dword ptr g_vs[0], 1                   ; Enable = TRUE
+    mov rax, g_bltView
+    mov qword ptr g_vs[32], rax                 ; pInputSurface（@32，前面有 5 个整型+对齐）
+    mov rax, g_vc
+    mov g_a1, rax
+    mov g_a2, SLOT_VPBlt
+    mov rax, g_vp
+    mov g_a3, rax
+    mov rax, g_outView
+    mov g_a4, rax
+    mov g_a5, 0                                ; OutputFrame
+    mov rax, 1
+    mov g_a6, rax                              ; StreamCount
+    lea rax, g_vs
+    mov g_a7, rax                              ; pStreams
+    call CC5
+    mov g_hrTmp, eax
+    test eax, eax
+    jns bv_ok
+    mov eax, g_vpbltFailN
+    xor edx, edx
+    mov ecx, 500
+    div ecx
+    test edx, edx
+    jnz bv_nolog
+    lea rax, szVpbltFailed
+    mov g_a1, rax
+    mov eax, g_hrTmp
+    mov g_a2, rax
+    call DpLog
+bv_nolog:
+    inc g_vpbltFailN
+    xor eax, eax
+    jmp bv_done
+bv_ok:
+    mov eax, 1
+bv_done:
+    add rsp, 28h
+    ret
+BltVp ENDP
+
+; ------------------------------------------------------------
+; PresentNow -> eax = 1/0（垂直同步呈现；首帧/失败限频日志）
+; ------------------------------------------------------------
+PresentNow PROC
+    sub rsp, 28h
+    mov rax, g_swap
+    mov g_a1, rax
+    mov g_a2, SLOT_Present
+    mov rax, 1
+    mov g_a3, rax
+    mov g_a4, 0
+    call CC2
+    mov g_hrTmp, eax
+    cmp g_presentLogged, 0
+    jne pn_checkfail
+    mov g_presentLogged, 1
+    lea rax, szFirstPresent
+    mov g_a1, rax
+    mov eax, g_hrTmp
+    mov g_a2, rax
+    call DpLog
+pn_checkfail:
+    mov eax, g_hrTmp
+    test eax, eax
+    jns pn_ok
+    mov eax, g_presentFailN
+    xor edx, edx
+    mov ecx, 500
+    div ecx
+    test edx, edx
+    jnz pn_nolog
+    lea rax, szPresentFailed
+    mov g_a1, rax
+    mov eax, g_hrTmp
+    mov g_a2, rax
+    call DpLog
+pn_nolog:
+    inc g_presentFailN
+    xor eax, eax
+    jmp pn_done
+pn_ok:
+    mov eax, 1
+pn_done:
+    add rsp, 28h
+    ret
+PresentNow ENDP
+
+; ------------------------------------------------------------
+; DrawSample(rcx = IMFSample, rdx = present) -> eax = 1/0
+;   路径 1：DXVA 零拷贝（buffer 直接封装 GPU 纹理）
+;   路径 2：系统内存 Lock2D/Lock → UpdateSubresource 上传
+; ------------------------------------------------------------
+DrawSample PROC
+    sub rsp, 28h
+    test rcx, rcx
+    jz ds_zero
+    cmp g_outView, 0
+    je ds_zero
+    mov g_sample, rcx
+    mov g_present, edx
+    ; ConvertToContiguousBuffer
+    mov rax, g_sample
+    mov g_a1, rax
+    mov g_a2, SLOT_ConvertToContiguousBuffer
+    lea rax, g_buf
+    mov g_a3, rax
+    call CC1
+    test eax, eax
+    js ds_zero
+    cmp g_buf, 0
+    je ds_zero
+    ; ---- 路径 1：DXVA 零拷贝 ----
+    mov rax, g_buf
+    mov g_a1, rax
+    lea rax, gi_MfDxgiBuf
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_dxb
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js ds_path2
+    cmp g_dxb, 0
+    je ds_path2
+    mov rax, g_dxb
+    mov g_a1, rax
+    lea rax, gi_Tex2D
+    mov g_a2, SLOT_GetResource
+    mov g_a3, rax
+    lea rax, g_tmpTex
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js ds_dxbfail
+    cmp g_tmpTex, 0
+    je ds_dxbfail
+    mov rax, g_dxb
+    mov g_a1, rax
+    mov g_a2, SLOT_GetSubresourceIndex
+    lea rax, g_rsub
+    mov g_a3, rax
+    call CC1
+    test eax, eax
+    js ds_texrel
+    ; 输入视图描述（FourCC 必须显式声明，否则采样全黑）
+    lea rdi, g_ivd
+    xor eax, eax
+    mov ecx, 2
+    rep stosq
+    mov eax, g_upIsNv12
+    test eax, eax
+    jz ds_fourcc0
+    mov dword ptr g_ivd[0], FOURCC_NV12
+ds_fourcc0:
+    mov dword ptr g_ivd[4], D3D11_VPIV_DIMENSION_TEXTURE2D
+    mov dword ptr g_ivd[8], 0
+    mov eax, g_rsub
+    mov dword ptr g_ivd[12], eax
+    mov rax, g_vd
+    mov g_a1, rax
+    mov g_a2, SLOT_CreateVPInputView
+    mov rax, g_tmpTex
+    mov g_a3, rax
+    mov rax, g_vpe
+    mov g_a4, rax
+    lea rax, g_ivd
+    mov g_a5, rax
+    lea rax, g_tmpView
+    mov g_a6, rax
+    call CC4
+    test eax, eax
+    js ds_texrel
+    cmp g_tmpView, 0
+    je ds_texrel
+    mov rcx, g_tmpView
+    call BltVp
+    mov g_hrTmp, eax
+    cmp g_zerocopyLogged, 0
+    jne ds_zc1
+    mov g_zerocopyLogged, 1
+    lea rax, szZerocopyPath
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+ds_zc1:
+    lea rcx, g_tmpView
+    call ReleaseClear
+    lea rcx, g_tmpTex
+    call ReleaseClear
+    lea rcx, g_dxb
+    call ReleaseClear
+    lea rcx, g_buf
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    jz ds_zero
+    cmp g_present, 0
+    je ds_ret_ok
+    call PresentNow
+    jmp ds_done
+ds_texrel:
+    lea rcx, g_tmpTex
+    call ReleaseClear
+ds_dxbfail:
+    lea rcx, g_dxb
+    call ReleaseClear
+ds_path2:
+    ; ---- 路径 2：系统内存上传 ----
+    cmp g_upTex, 0
+    je ds_relbuf
+    cmp g_inView, 0
+    je ds_relbuf
+    mov g_b2d, 0
+    mov g_locked2d, 0
+    ; 先试 IMF2DBuffer::Lock2D
+    mov rax, g_buf
+    mov g_a1, rax
+    lea rax, gi_Mf2DBuf
+    mov g_a2, SLOT_QI
+    mov g_a3, rax
+    lea rax, g_b2d
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js ds_plainlock
+    cmp g_b2d, 0
+    je ds_plainlock
+    mov rax, g_b2d
+    mov g_a1, rax
+    mov g_a2, SLOT_Lock2D
+    lea rax, g_pix
+    mov g_a3, rax
+    lea rax, g_pitch
+    mov g_a4, rax
+    call CC2
+    test eax, eax
+    js ds_b2drel
+    mov g_locked2d, 1
+    ; 负 stride = bottom-up：翻行序
+    mov eax, g_pitch
+    test eax, eax
+    jns ds_locked
+    neg eax
+    mov g_pitch, eax
+    mov ecx, g_vh
+    dec ecx
+    imul rax, rcx
+    add g_pix, rax
+    jmp ds_locked
+ds_b2drel:
+    lea rcx, g_b2d
+    call ReleaseClear
+ds_plainlock:
+    ; 退路：普通 Lock + 宽度推 stride
+    mov rax, g_buf
+    mov g_a1, rax
+    mov g_a2, SLOT_BufLock
+    lea rax, g_pix
+    mov g_a3, rax
+    mov g_a4, 0
+    lea rax, g_len
+    mov g_a5, rax
+    call CC3
+    test eax, eax
+    js ds_relbuf
+    cmp g_pix, 0
+    je ds_relbuf
+    mov eax, g_upIsNv12
+    test eax, eax
+    jz ds_plainrgb
+    mov eax, g_vw
+    mov g_pitch, eax
+    jmp ds_locked
+ds_plainrgb:
+    mov eax, g_vw
+    shl eax, 2
+    mov g_pitch, eax
+ds_locked:
+    ; 上传（NV12 两个平面 / RGB32 一个）
+    mov eax, g_upIsNv12
+    test eax, eax
+    jz ds_rgb_upload
+    mov rax, g_ctx
+    mov g_a1, rax
+    mov rax, g_upTex
+    mov g_a2, SLOT_UpdateSubresource
+    mov g_a3, rax
+    mov g_a4, 0                                ; subresource 0 = Y
+    mov g_a5, 0                                ; box
+    mov rax, g_pix
+    mov g_a6, rax
+    mov eax, g_pitch
+    mov g_a7, rax
+    mov g_a8, 0                                ; depth
+    call CC6
+    mov eax, g_pitch
+    mov ecx, g_vh
+    imul rax, rcx
+    add rax, g_pix
+    mov g_uvptr, rax
+    mov rax, g_ctx
+    mov g_a1, rax
+    mov rax, g_upTex
+    mov g_a2, SLOT_UpdateSubresource
+    mov g_a3, rax
+    mov rax, 1
+    mov g_a4, rax                              ; subresource 1 = UV
+    mov g_a5, 0
+    mov rax, g_uvptr
+    mov g_a6, rax
+    mov eax, g_pitch
+    mov g_a7, rax
+    mov g_a8, 0
+    call CC6
+    jmp ds_uploaded
+ds_rgb_upload:
+    mov rax, g_ctx
+    mov g_a1, rax
+    mov rax, g_upTex
+    mov g_a2, SLOT_UpdateSubresource
+    mov g_a3, rax
+    mov g_a4, 0
+    mov g_a5, 0
+    mov rax, g_pix
+    mov g_a6, rax
+    mov eax, g_pitch
+    mov g_a7, rax
+    mov g_a8, 0
+    call CC6
+ds_uploaded:
+    ; 解锁
+    cmp g_locked2d, 0
+    je ds_plainunlock
+    mov rax, g_b2d
+    mov g_a1, rax
+    mov g_a2, SLOT_Unlock2D
+    call CC0
+    lea rcx, g_b2d
+    call ReleaseClear
+    jmp ds_relbuf
+ds_plainunlock:
+    mov rax, g_buf
+    mov g_a1, rax
+    mov g_a2, SLOT_BufUnlock
+    call CC0
+ds_relbuf:
+    lea rcx, g_buf
+    call ReleaseClear
+    ; GPU 转换 + 缩放
+    mov rcx, g_inView
+    call BltVp
+    test eax, eax
+    jz ds_zero
+    cmp g_present, 0
+    je ds_ret_ok
+    call PresentNow
+    jmp ds_done
+ds_ret_ok:
+    mov eax, 1
+    jmp ds_done
+ds_zero:
+    xor eax, eax
+ds_done:
+    add rsp, 28h
+    ret
+DrawSample ENDP
+
+; ------------------------------------------------------------
+; D3DPumpFrame -> eax = 下一 tick 间隔(ms)
+;   按墙上时钟追帧 + EOS 无缝循环（seek 回开头，交换链保留帧）
+; ------------------------------------------------------------
+D3DPumpFrame PROC
+    sub rsp, 28h
+    cmp g_active, 0
+    je dp_idle
+    cmp g_reader, 0
+    je dp_idle
+    ; 延迟 trim（播放稳定后归还备用页）
+    cmp g_trimmed, 0
+    jne dp_notrim
+    cmp g_startTick, 0
+    je dp_notrim
+    CALLV GetTickCount64
+    sub rax, g_startTick
+    cmp rax, 15000
+    jbe dp_notrim
+    mov g_trimmed, 1
+    CALLV GetCurrentProcess
+    mov g_a1, rax
+    mov rax, -1
+    mov g_a2, rax
+    mov g_a3, rax
+    CALLV SetProcessWorkingSetSize, g_a1, g_a2, g_a3
+dp_notrim:
+    ; 窗口尺寸变了 → 重建交换链自适应
+    cmp g_vhwnd, 0
+    je dp_nosize
+    CALLV IsWindow, g_vhwnd
+    test eax, eax
+    jz dp_nosize
+    lea rax, g_rc
+    CALLV GetClientRect, g_vhwnd, rax
+    mov eax, dword ptr g_rc[8]
+    sub eax, dword ptr g_rc[0]
+    mov g_bw, eax
+    mov eax, dword ptr g_rc[12]
+    sub eax, dword ptr g_rc[4]
+    mov g_bh, eax
+    cmp g_bw, 0
+    jle dp_nosize
+    cmp g_bh, 0
+    jle dp_nosize
+    mov eax, g_bw
+    cmp eax, g_scW
+    jne dp_resize
+    mov eax, g_bh
+    cmp eax, g_scH
+    jne dp_resize
+    jmp dp_nosize
+dp_resize:
+    call BuildDrawChain
+dp_nosize:
+    ; ---- 追帧时钟 ----
+    CALLV GetTickCount64
+    mov g_now64, rax
+    cmp g_startWall, 0
+    jne dp_havewall
+    mov rax, g_now64
+    mov g_startWall, rax
+    mov g_lastTs, -1
+dp_havewall:
+    mov rax, g_now64
+    sub rax, g_startWall
+    imul rax, rax, 10000
+    add rax, g_startTs
+    mov g_vTarget, rax
+    mov g_drawn, 0
+dp_loop:
+    mov rax, g_lastTs
+    cmp rax, g_vTarget
+    jge dp_loopdone
+    cmp g_drawn, 4
+    jge dp_loopdone
+    cmp g_reader, 0
+    je dp_loopdone
+    mov rax, g_reader
+    mov g_a1, rax
+    mov rax, MF_SRCREADER_FIRST_VIDEO
+    mov g_a2, SLOT_ReadSample
+    mov g_a3, rax
+    mov g_a4, 0                                ; controlFlags
+    mov g_a5, 0                                ; actualStreamIndex
+    lea rax, g_flags
+    mov g_a6, rax
+    lea rax, g_ts
+    mov g_a7, rax
+    lea rax, g_sample
+    mov g_a8, rax
+    call CC6
+    mov g_hrTmp, eax
+    test eax, eax
+    js dp_readfail
+    mov eax, g_flags
+    and eax, MF_SRCREADERF_EOFS
+    jz dp_havesample
+    jmp dp_eos
+dp_havesample:
+    cmp g_sample, 0
+    je dp_loopdone                             ; STREAMTICK 空帧：等下个 tick
+    mov rcx, g_sample
+    mov rdx, 0
+    call DrawSample
+    mov g_hrTmp, eax
+    lea rcx, g_sample
+    call ReleaseClear
+    mov eax, g_hrTmp
+    test eax, eax
+    jz dp_loopdone
+    mov rax, g_ts
+    mov g_lastTs, rax
+    mov g_loopRetry, 0
+    inc g_drawn
+    jmp dp_loop
+dp_readfail:
+    lea rax, szReadsampleFailed
+    mov g_a1, rax
+    mov eax, g_hrTmp
+    mov g_a2, rax
+    call DpLog
+    mov g_active, 0
+    mov eax, 16
+    jmp dp_done
+dp_eos:
+    cmp g_sample, 0
+    je dp_eos1
+    lea rcx, g_sample
+    call ReleaseClear
+dp_eos1:
+    ; ★ 无缝循环：seek 回开头，渲染管线不中断、交换链保留画面
+    ; 分级回退：seek(0) → seek(1) 强制真 seek → 重建 reader
+    mov g_pvpos, 0
+    cmp g_loopRetry, 0
+    je dp_seekpos
+    mov g_pvpos, 1
+dp_seekpos:
+    lea rdi, g_pv
+    xor eax, eax
+    mov ecx, 3
+    rep stosq
+    mov word ptr g_pv[0], VT_I8
+    mov eax, g_pvpos
+    mov dword ptr g_pv[8], eax                 ; hVal.QuadPart 低 32（高 32 已清零）
+    mov rax, g_reader
+    mov g_a1, rax
+    mov g_a2, SLOT_SetCurrentPosition
+    lea rax, g_guidNull
+    mov g_a3, rax
+    lea rax, g_pv
+    mov g_a4, rax
+    call CC2
+    mov g_hrTmp, eax
+    ; loopProbs = FAILED(hr) || loopRetry >= 2
+    mov g_loopProbs, 0
+    test eax, eax
+    js dp_lp1
+    cmp g_loopRetry, 2
+    jb dp_lp2
+dp_lp1:
+    mov g_loopProbs, 1
+dp_lp2:
+    cmp g_loopProbs, 0
+    je dp_seekok
+    ; 重建 reader
+    lea rcx, g_vpath
+    mov rdx, 1
+    call CreateReader
+    mov g_nreader, rax
+    test rax, rax
+    jnz dp_nr1
+    lea rcx, g_vpath
+    xor edx, edx
+    call CreateReader
+    mov g_nreader, rax
+    test rax, rax
+    jnz dp_nr1
+    lea rax, szLoopRebuildFailed
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    mov g_active, 0
+    mov eax, 500
+    jmp dp_done
+dp_nr1:
+    lea rcx, g_reader
+    call ReleaseClear
+    mov rax, g_nreader
+    mov g_reader, rax
+    lea rax, szLoopReaderRebuilt
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+    jmp dp_loopcount
+dp_seekok:
+    inc g_loopRetry
+dp_loopcount:
+    inc g_loopCount
+    ; 循环日志限频：异常路径 / 首轮 / 每 500 轮
+    mov eax, g_loopCount
+    cmp eax, 1
+    je dp_eoslog
+    xor edx, edx
+    mov ecx, 500
+    div ecx
+    test edx, edx
+    jz dp_eoslog
+    cmp g_loopProbs, 0
+    jne dp_eoslog
+    jmp dp_eosnolog
+dp_eoslog:
+    call BuildEosInfo
+    lea rax, g_dmsg
+    mov g_a1, rax
+    mov g_a2, 0
+    call DpLog
+dp_eosnolog:
+    ; 重置播放时钟：从新一轮第 0ms 起算
+    mov rax, g_now64
+    mov g_startWall, rax
+    mov g_startTs, 0
+    mov g_lastTs, -1
+    mov g_vTarget, 0
+    ; ★ 必须 break 不能 continue：target=0/lastTs=-1 会让循环条件恒真，
+    ; 源在 seek 后仍持续 EOS 时退化为无界自旋，看门狗与 quit 握手全部失效。
+    jmp dp_present
+dp_loopdone:
+dp_present:
+    cmp g_swap, 0
+    je dp_ret8
+    call PresentNow
+dp_ret8:
+    mov eax, 8
+    jmp dp_done
+dp_idle:
+    mov eax, 33
+dp_done:
+    add rsp, 28h
+    ret
+D3DPumpFrame ENDP
+
+; ------------------------------------------------------------
+; D3DSetWindow(rcx = hwnd) - 窗口重建/重绑定后换绘制链目标
+; ------------------------------------------------------------
+D3DSetWindow PROC
+    sub rsp, 28h
+    test rcx, rcx
+    jz dsw_done
+    cmp rcx, g_vhwnd
+    je dsw_done
+    mov g_vhwnd, rcx
+    cmp g_dev, 0
+    je dsw_done
+    call BuildDrawChain
+dsw_done:
+    add rsp, 28h
+    ret
+D3DSetWindow ENDP
+
+; ------------------------------------------------------------
+; D3DShutdown - 全量释放（reader/绘制链/设备），状态复位
+; ------------------------------------------------------------
+D3DShutdown PROC
+    sub rsp, 28h
+    mov g_active, 0
+    mov g_trimmed, 0
+    mov g_startTick, 0
+    mov g_loopCount, 0
+    mov g_lastTs, 0
+    mov g_startWall, 0
+    mov g_startTs, 0
+    mov g_loopRetry, 0
+    call ReleaseDrawChain
+    lea rcx, g_upTex
+    call ReleaseClear
+    lea rcx, g_reader
+    call ReleaseClear
+    lea rcx, g_dxm
+    call ReleaseClear
+    lea rcx, g_vc
+    call ReleaseClear
+    lea rcx, g_vd
+    call ReleaseClear
+    lea rcx, g_ctx
+    call ReleaseClear
+    lea rcx, g_dev
+    call ReleaseClear
+    mov g_vhwnd, 0
+    mov g_scW, 0
+    mov g_scH, 0
+    mov g_vw, 0
+    mov g_vh, 0
+    mov g_hwDecode, 0
+    add rsp, 28h
+    ret
+D3DShutdown ENDP
+
+; ------------------------------------------------------------
+; StartFrameTimer - 按当前素材类型重设/停掉帧定时器
+; ------------------------------------------------------------
+StartFrameTimer PROC
+    sub rsp, 28h
+    cmp g_isVideo, 0
+    je sft_img
+    CALLV SetTimer, g_host, TIMER_FRAME, 16, 0
+    jmp sft_done
+sft_img:
+    CALLV KillTimer, g_host, TIMER_FRAME
+sft_done:
+    add rsp, 28h
+    ret
+StartFrameTimer ENDP
+
+; ------------------------------------------------------------
+; AdvanceFrame - WM_TIMER(TIMER_FRAME)：视频泵帧并重设间隔
+; ------------------------------------------------------------
+AdvanceFrame PROC
+    sub rsp, 28h
+    cmp g_isVideo, 0
+    je af_done
+    call D3DPumpFrame
+    cmp eax, 10
+    jae af_set
+    mov eax, 10
+af_set:
+    mov r10d, eax
+    CALLV SetTimer, g_host, TIMER_FRAME, r10, 0
+af_done:
+    add rsp, 28h
+    ret
+AdvanceFrame ENDP
+
+; ------------------------------------------------------------
+; LoadMediaInto(rcx = path) -> eax = 1/0
+;   视频 → D3DInit（内部先 D3DShutdown）；图片 → D3DShutdown + LoadImageFile
+;   对齐 c/main.c LoadMediaInto；失败由调用方负责回滚旧素材
+; ------------------------------------------------------------
+LoadMediaInto PROC
+    sub rsp, 28h
+    mov qword ptr g_lmiPath, rcx
+    lea rcx, g_lmiPath
+    call IsVideoFile
+    test eax, eax
+    jz lmi_image
+    ; ---- 视频：释放旧 GDI+ 图，交给 D3D 播放器 ----
+    cmp g_img, 0
+    je lmi_v
+    CALLV GdipDisposeImage, g_img
+    mov g_img, 0
+lmi_v:
+    mov rcx, g_hwnd
+    lea rdx, g_lmiPath
+    call D3DInit
+    test eax, eax
+    jz lmi_fail
+    mov g_isVideo, 1
+    lea rdi, g_curMedia
+    lea rsi, g_lmiPath
+    mov ecx, 259
+    rep movsw
+    mov word ptr [rdi], 0
+    mov eax, 1
+    jmp lmi_done
+lmi_image:
+    ; ---- 图片：停视频（避免两套同时占 GPU），加载图 ----
+    call D3DShutdown
+    mov g_isVideo, 0
+    lea rcx, g_lmiPath
+    call LoadImageFile
+    test eax, eax
+    jz lmi_fail
+    mov eax, 1
+    jmp lmi_done
+lmi_fail:
+    xor eax, eax
+lmi_done:
+    add rsp, 28h
+    ret
+LoadMediaInto ENDP
 
 END

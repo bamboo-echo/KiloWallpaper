@@ -3,7 +3,7 @@ rem ============================================================
 rem  KiloWallpaper - build script (MASM x64, ml64)
 rem
 rem  Produces, in this folder:
-rem    DynamicWallpaper.exe    main wallpaper process (static image)
+rem    DynamicWallpaper.exe    main wallpaper process (static image + video)
 rem
 rem  The toolchain is located with vswhere.exe, so ANY Visual Studio
 rem  2017+ edition works (Community / Professional / Enterprise /
@@ -44,6 +44,7 @@ echo [2/2] linking
 link /nologo /SUBSYSTEM:WINDOWS /ENTRY:start ^
     main.obj ^
     user32.lib gdi32.lib gdiplus.lib kernel32.lib psapi.lib ^
+    d3d11.lib dxgi.lib dcomp.lib mfplat.lib mfreadwrite.lib mfuuid.lib ole32.lib ^
     /OUT:DynamicWallpaper.exe
 if errorlevel 1 goto buildfail
 
