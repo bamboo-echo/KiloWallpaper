@@ -42,6 +42,21 @@ asm 版**没有守护进程**，不会被杀软互保，但请同样走握手而
 与其余四套保持一致的习惯。嵌入成功的策略名也会写进 exe 同目录的
 `wallpaper.embed`，在仓库根目录跑 `python tools\check_embed.py` 可自查。
 
+**外部监控**（2026-10-21 加，补上"无守护"的缺口）：`monitor.ps1` 由计划任务
+`KiloWallpaperMonitor` 每 2 分钟调用一次，检查五项并自愈——
+
+| 检查 | 异常处置 |
+| --- | --- |
+| 进程存活 | 不在 → 经一次性计划任务重启（脱离调用方进程树） |
+| 日志心跳 | `debug.log` 的 `[res]` 快照每 60s 一条，超 5 分钟无更新 = 消息循环卡死 → 重启 |
+| CPU 停滞 | 心跳正常但 CPU 增量 < 间隔×1%（健康解码约 3~4%）→ 重启；睡眠间隔（>10min）跳过 |
+| 新错误 | 只扫上次检查之后新增的日志行，命中 `failed` 记入监控日志 |
+| z 序回归 | Progman 子窗口里 DefView 必须在壁纸窗口之上，否则图标被盖 → 重启重锚 |
+
+事件与心跳全部记入 `asm/monitor.log`（`*.log` 已被 gitignore），状态基准
+（时间/pid/CPU/行数）记 `asm/monitor.state`。手动跑一次：
+`powershell -ExecutionPolicy Bypass -File asm\monitor.ps1`。
+
 ## 视频链实现要点（2026-10-20 实测对齐 c 版）
 
 ```
