@@ -1,7 +1,7 @@
 # KiloWallpaper — ASM 参考实现（MASM x64）
 
 纯 MASM x64 汇编，**零 CRT**（不链 msvcrt / ucrt），只用 Windows 系统 DLL。
-单文件 `main.asm`（4832 行）实现完整壁纸：桌面嵌入、图标层双向 z 序锚定、
+单文件 `main.asm`（4836 行）实现完整壁纸：桌面嵌入、图标层双向 z 序锚定、
 配置热重载、退出握手、周期资源快照日志，以及**视频动态壁纸全链路**——
 MF 解码（DXVA 硬解优先、软解自动回退）+ D3D11 + 视频处理器 +
 DirectComposition 呈现 + 无缝循环。静态图渲染 CPU 精确为 0。
@@ -118,6 +118,14 @@ D3D11CreateDevice(VIDEO_SUPPORT|BGRA_SUPPORT)   失败退级 BGRA-only
 - 视频（2026-10-20）：2K(2560x1440) mp4 启动 → DXVA 硬解 → zerocopy →
   DComp 呈现 → 首帧 → EOS 无缝循环（10s 片，`loop=1` 后持续播放），
   稳态内存与 c 版持平；`wallpaper.quit` 握手干净退出；全屏截图确认画面可见。
-- 已修复的实现级 bug（均有 cdb 现场证据）：CC0..CC3 影子空间不足致
-  rip=0 崩溃、CC5 调用点 misalign、`gi_VideoDev` GUID 两字节错误、
-  `DCompositionCreateDevice` 首参传错、`g_hwDecode` 标志误清零。
+- 图标层共存（2026-10-21）：修复 z 序锚定 bug 后，Progman 子窗口 z 序实测为
+  `SHELLDLL_DefView(图标) → DynamicWallpaper(壁纸) → WorkerW(系统壁纸层)`，
+  与 cpp 版逐项一致；最小化全部窗口截图确认桌面图标完整显示在壁纸之上。
+  本机当前系统壁纸即 asm 版（自启 LNK 与登录计划任务均指向本目录）。
+- 已修复的实现级 bug（均有现场证据）：CC0..CC3 影子空间不足致 rip=0 崩溃
+  （cdb trace）、CC5 调用点 misalign、`gi_VideoDev` GUID 两字节错误、
+  `DCompositionCreateDevice` 首参传错、`g_hwDecode` 标志误清零、
+  **`EnsureWallpaperZOrder` 缓存路径寄存器复用**——`GetParent` 的返回值
+  （父窗口 Progman）被当作 DefView/WorkerW 句柄传给 `SetWindowPos` 的
+  `hWndInsertAfter`（非兄弟窗口，调用失败），壁纸留在图标层之上盖住桌面
+  图标（2026-10-20 截图实证）；修为缓存命中时先把句柄换回 `rax`。

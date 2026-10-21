@@ -1815,7 +1815,9 @@ EnsureWallpaperZOrder PROC
     jz ez_findDV
     CALLV GetParent, g_defView
     cmp rax, g_lParent
-    je ez_haveDV
+    jne ez_findDV
+    mov rax, g_defView         ; 修复：rax 刚被 GetParent 覆写为父窗口，换回缓存的 DefView 句柄
+    jmp ez_haveDV              ; （曾传 Progman 当 hWndInsertAfter → SetWindowPos 失败 → 壁纸盖住桌面图标）
 ez_findDV:
     lea rax, clsDefView
     CALLV FindWindowExW, g_lParent, 0, rax, 0
@@ -1847,7 +1849,9 @@ ez_haveDV:
     jz ez_findWW
     CALLV GetParent, g_workerW
     cmp rax, g_lParent
-    je ez_haveWW
+    jne ez_findWW
+    mov rax, g_workerW         ; 修复：同上，rax 被 GetParent 覆写，换回缓存的 WorkerW 句柄
+    jmp ez_haveWW
 ez_findWW:
     lea rax, clsWorkerW
     CALLV FindWindowExW, g_lParent, 0, rax, 0
