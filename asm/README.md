@@ -136,7 +136,9 @@ D3D11CreateDevice(VIDEO_SUPPORT|BGRA_SUPPORT)   失败退级 BGRA-only
 - 图标层共存（2026-10-21）：修复 z 序锚定 bug 后，Progman 子窗口 z 序实测为
   `SHELLDLL_DefView(图标) → DynamicWallpaper(壁纸) → WorkerW(系统壁纸层)`，
   与 cpp 版逐项一致；最小化全部窗口截图确认桌面图标完整显示在壁纸之上。
-  本机当前系统壁纸即 asm 版（自启 LNK 与登录计划任务均指向本目录）。
+  本机 2026-10-21 曾作为系统壁纸实测通过（后按用户要求切回 cpp 版；
+  切回方法：自启 LNK 与登录计划任务 `KiloWallpaperAutoStart` 改指 cpp，
+  并注销监控任务 `KiloWallpaperMonitor`——它只认 asm 路径，留着会把 asm 反复拉起）。
 - 已修复的实现级 bug（均有现场证据）：CC0..CC3 影子空间不足致 rip=0 崩溃
   （cdb trace）、CC5 调用点 misalign、`gi_VideoDev` GUID 两字节错误、
   `DCompositionCreateDevice` 首参传错、`g_hwDecode` 标志误清零、
