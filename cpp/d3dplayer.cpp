@@ -90,7 +90,7 @@ static void DpLog(const wchar_t* msg, HRESULT hr) {
 }
 
 // ---------- 解码器：优先 DXVA 硬解（配 D3D manager），失败逐级回退 ----------
-static IMFSourceReader* CreateReader(const wchar_t* path, bool useDxva) {
+static IMFSourceReader* CreateReader(const wchar_t* path, bool useDxva, bool preferNv12) {
     IMFAttributes* attr = nullptr;
     if (FAILED(MFCreateAttributes(&attr, 4))) return nullptr;
 
@@ -117,12 +117,12 @@ static IMFSourceReader* CreateReader(const wchar_t* path, bool useDxva) {
     reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
     reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
 
-    // 输出类型协商：
-    //   DXVA 模式 → 优先 RGB32：强制插入转换 MFT，由它把解码器的 GPU 纹理
-    //     下载为系统内存（NV12 直通路径实测数据流断：首帧即 EOS）
-    //   软解模式 → 优先 NV12（解码器原生输出，零转换）
-    const GUID& first = useDxva ? MFVideoFormat_RGB32 : MFVideoFormat_NV12;
-    const GUID& second = useDxva ? MFVideoFormat_NV12 : MFVideoFormat_RGB32;
+    // 输出类型协商：优先 NV12 —— 每帧 CPU 上传拷贝 5.5MB，只有 RGB32 的约 2/5。
+    // 注意 DXVA 模式曾默认优先 RGB32，因为部分源在 NV12 输出上首帧即 EOS；
+    // 但"协商成功"不等于"能出数据"，所以调用方（OpenVerifiedReader）会真读
+    // 一帧验证，出不了就整体回退 RGB32 —— 只为降 CPU，不牺牲功能。
+    const GUID& first = preferNv12 ? MFVideoFormat_NV12 : MFVideoFormat_RGB32;
+    const GUID& second = preferNv12 ? MFVideoFormat_RGB32 : MFVideoFormat_NV12;
     IMFMediaType* mt = nullptr;
     if (FAILED(MFCreateMediaType(&mt)) || !mt) { reader->Release(); return nullptr; }
     mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -140,6 +140,47 @@ static IMFSourceReader* CreateReader(const wchar_t* path, bool useDxva) {
     if (SUCCEEDED(hr)) return reader;
 
     reader->Release();
+    return nullptr;
+}
+
+// 真读到一帧才算"这个输出格式可用"。部分源在 NV12 输出上协商成功但首帧即 EOS，
+// 只看 SetCurrentMediaType 的返回值判断会误以为可用，结果视频链路空转。
+static bool ProbeFirstSample(IMFSourceReader* reader) {
+    if (!reader) return false;
+    // 最多读 3 次：MF 首帧可能先给一个 STREAMTICK 空帧再给真正的样本。
+    for (int i = 0; i < 3; i++) {
+        DWORD flags = 0;
+        LONGLONG ts = 0;
+        IMFSample* s = nullptr;
+        HRESULT hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+                                        nullptr, &flags, &ts, &s);
+        bool eos = (flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
+        bool got = SUCCEEDED(hr) && s && !eos;
+        if (s) s->Release();
+        if (got) {
+            // 回到片头。不支持 seek 的源也无妨：探测读到的那一帧被丢弃，
+            // 播放从第二帧继续，之后的 EOS 循环仍会走正常的 seek 逻辑。
+            PROPVARIANT pv;
+            PropVariantInit(&pv);
+            pv.vt = VT_I8;
+            pv.hVal.QuadPart = 0;
+            reader->SetCurrentPosition(GUID_NULL, pv);
+            PropVariantClear(&pv);
+            return true;
+        }
+        if (FAILED(hr) || eos) return false;
+    }
+    return false;
+}
+
+// 按"优先格式 → 另一种格式"依次尝试，每个都先探测一帧。全都不可用才返回 nullptr。
+static IMFSourceReader* OpenVerifiedReader(const wchar_t* path, bool useDxva, bool preferNv12) {
+    IMFSourceReader* r = CreateReader(path, useDxva, preferNv12);
+    if (r && ProbeFirstSample(r)) return r;
+    if (r) { r->Release(); r = nullptr; }
+    r = CreateReader(path, useDxva, !preferNv12);
+    if (r && ProbeFirstSample(r)) return r;
+    if (r) { r->Release(); r = nullptr; }
     return nullptr;
 }
 
@@ -311,11 +352,14 @@ bool D3DInit(HWND hwnd, const wchar_t* videoPath) {
         }
     }
 
-    // 3. 解码器：优先 DXVA 硬解，失败退软解
-    g_reader = CreateReader(videoPath, true);
-    g_hwDecode = (g_reader != nullptr);
+    // 3. 解码器：优先 DXVA 硬解，失败退软解。每种模式都"NV12 优先 → RGB32 回退"，
+    //    并且必须真读到一帧才算可用（OpenVerifiedReader 内部探测），避免 NV12
+    //    协商成功但数据流断时整个视频链路空转 → 功能不受影响，只是格式择优。
+    g_hwDecode = true;
+    g_reader = OpenVerifiedReader(videoPath, true, true);
     if (!g_reader) {
-        g_reader = CreateReader(videoPath, false);
+        g_hwDecode = false;
+        g_reader = OpenVerifiedReader(videoPath, false, true);
         if (!g_reader) { DpLog(L"reader failed", E_FAIL); D3DShutdown(); return false; }
     }
 
@@ -484,8 +528,9 @@ static bool DrawSample(IMFSample* sample, bool present) {
 UINT D3DPumpFrame() {
     if (!g_active || !g_reader) return 33;
 
-    // 延迟 trim（播放稳定后归还备用页，任务管理器占用下降）
-    if (!g_trimmed && g_startTick && GetTickCount64() - g_startTick > 15000) {
+    // 延迟 trim（播放稳定后归还备用页，任务管理器占用下降）。
+    // 5 秒足以覆盖"出首帧 + 解码器面池分配"的高峰；更早归还的代价只是少量缺页。
+    if (!g_trimmed && g_startTick && GetTickCount64() - g_startTick > 5000) {
         g_trimmed = true;
         SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     }
@@ -526,8 +571,11 @@ UINT D3DPumpFrame() {
             PropVariantClear(&pv);
             bool loopProbs = FAILED(hr) || g_loopRetry >= 2;
             if (loopProbs) {
-                IMFSourceReader* nr = CreateReader(g_pathW.c_str(), true);
-                if (!nr) nr = CreateReader(g_pathW.c_str(), false);
+                // 优先沿用当前上传纹理的像素格式重建：OpenVerifiedReader 会先试
+                // g_upIsNv12 对应的格式，通常保持一致，避免 g_upTex 平面布局不匹配；
+                // 只有原格式彻底不可用时才会回退到另一种，属既有边界。
+                IMFSourceReader* nr = OpenVerifiedReader(g_pathW.c_str(), true, g_upIsNv12);
+                if (!nr) nr = OpenVerifiedReader(g_pathW.c_str(), false, g_upIsNv12);
                 if (nr) {
                     if (g_reader) g_reader->Release();
                     g_reader = nr;
@@ -570,14 +618,20 @@ UINT D3DPumpFrame() {
         if (!ok) break;
     }
 
-    // 本 tick 无论是否更新内容都 vsync 呈现（重复帧无开销，节奏对齐刷新率）
-    if (g_swap) PresentNow();
+    // 只在真的解出新帧时呈现：交换链全程保留上一帧，重复 Present 不改变画面，
+    // 只是驱动/合成器的无谓开销（WM_TIMER 下限约 15.6ms，24fps 下约四成 tick 无新帧）。
+    if (drawn > 0 && g_swap) PresentNow();
     return 8;   // 高频 tick：追帧逻辑吸收定时器误差
 }
 
 // ---------- 重绑窗口（看门狗重建/重嵌入后） ----------
 void D3DSetWindow(HWND hwnd) {
-    if (!hwnd || hwnd == g_hwnd) return;
+    // nullptr = 解绑（壁纸窗口已销毁，main.cpp 的 WM_DESTROY 调用）。
+    // 只比较句柄值是不够的：DestroyWindow 后系统会立即复用同一 HWND 数值，
+    // 新窗口若拿到旧值，单靠 hwnd == g_hwnd + IsWindow 无法区分新旧窗口，
+    // 会跳过交换链重建 → 交换链绑在已销毁的窗口上 → 黑屏。
+    if (!hwnd) { g_hwnd = nullptr; return; }
+    if (hwnd == g_hwnd && IsWindow(g_hwnd)) return;
     g_hwnd = hwnd;
     if (g_dev) BuildDrawChain();   // 换窗口 = 交换链必须重建
 }

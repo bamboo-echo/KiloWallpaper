@@ -12,7 +12,7 @@
 常驻内存约 6.5 MB** —— 「极小占用」说的是这个**运行时开销**，不是文件大小。
 
 > 这是一份**最小可读的 Windows 桌面嵌入参考实现**：
-> 1926 行 C++ 串起 DXVA 硬解 → DirectComposition 零拷贝呈现 → Progman/WorkerW 嵌入 →
+> 2021 行 C++ 串起 DXVA 硬解 → DirectComposition 零拷贝呈现 → Progman/WorkerW 嵌入 →
 > 图标层双向 z 序锚定 → 双进程守护。功能刻意做得少，代码刻意写得短。
 > 可执行文件名仍为 `DynamicWallpaper.exe` / `DynamicWallpaperGuard.exe`。
 
@@ -39,7 +39,7 @@
 作为对比：Electron / WebView2 类方案光**运行时**常驻内存就要 100 MB 以上，
 CPU 也是一个核跑不满。这里整个程序（含守护进程）常驻约 6.5 MB。
 
-> 内存那一行有一个实现细节要说明：程序在播放稳定 **15 秒后主动调用
+> 内存那一行有一个实现细节要说明：程序在播放稳定 **5 秒后主动调用
 > `SetProcessWorkingSetSize(-1,-1)` 归还备用页**（`d3dplayer.cpp` 的延迟 trim）。
 > 所以任务管理器里的 ~6.5 MB 是 trim 之后的读数；提交内存 213~219 MB 才是
 > DXVA 解码器面池的真实预留量，两者并不矛盾。

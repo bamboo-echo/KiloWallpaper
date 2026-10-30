@@ -243,7 +243,25 @@ static void WatchdogTick() {
         return;
     }
     HWND p = GetParent(g_hwnd);
-    if (!p || !IsWindow(p) || (g_parent && !IsWindow(g_parent))) {
+    // 没有父窗口有两种情况：①顶层兜底策略已生效（窗口本来就无父）②尚未嵌入/嵌入失败。
+    // 只有 ②才需要重嵌。兜底稳定后若仍按"无父窗口就重嵌"，看门狗会每 3 秒重跑一遍
+    // EmbedOrFallback——每次 Sleep 120ms 阻塞消息循环、重写 wallpaper.embed 并追加
+    // 一行 embed 日志（约 2.8 万行/天）。兜底窗口只保留 60 秒一次的低频重试，
+    // 留出 explorer 恢复后自动升级回主路径的机会。
+    bool reembed = false;
+    if (!p || !IsWindow(p)) {
+        if (!g_embedOk) {
+            reembed = true;
+        } else {
+            static DWORD s_nextRetry = 0;
+            DWORD now = GetTickCount();
+            if (!s_nextRetry) s_nextRetry = now + 60000;
+            else if (now >= s_nextRetry) { s_nextRetry = now + 60000; reembed = true; }
+        }
+    } else if (g_parent && !IsWindow(g_parent)) {
+        reembed = true;
+    }
+    if (reembed) {
         EmbedOrFallback(g_hwnd);
         D3DSetWindow(g_hwnd);   // 重新嵌入后确保仍绑定当前窗口
     } else {
@@ -315,6 +333,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
     case WM_DESTROY:
         if (hwnd == g_hwnd) {
+            // 解绑播放器：DestroyWindow 后系统会立即复用同一 HWND 数值，
+            // 新窗口若拿到旧值，D3DSetWindow 只比较句柄值会误判"同一个窗口"
+            // 而跳过交换链重建 → 黑屏。这里先把内部记录清空。
+            D3DSetWindow(nullptr);
             g_hwnd = nullptr;
         }
         return 0;
