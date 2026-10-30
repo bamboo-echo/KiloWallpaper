@@ -81,7 +81,12 @@ unsafe fn release_chain(s: &mut State) {
     s.swap = None;
 }
 
-unsafe fn create_reader(path: &str, use_dxva: bool, dxm: Option<&IMFDXGIDeviceManager>) -> Option<IMFSourceReader> {
+unsafe fn create_reader(
+    path: &str,
+    use_dxva: bool,
+    dxm: Option<&IMFDXGIDeviceManager>,
+    prefer_nv12: bool,
+) -> Option<IMFSourceReader> {
     let mut attr: Option<IMFAttributes> = None;
     if MFCreateAttributes(&mut attr, 4).is_err() {
         return None;
@@ -109,10 +114,12 @@ unsafe fn create_reader(path: &str, use_dxva: bool, dxm: Option<&IMFDXGIDeviceMa
     let _ = reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false);
     let _ = reader.SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32, true);
 
-    let (first, second) = if use_dxva {
-        (MFVideoFormat_RGB32, MFVideoFormat_NV12)
-    } else {
+    // 优先 NV12：每帧 CPU 上传 5.5MB，只有 RGB32 的约 2/5。部分源 NV12 首帧即
+    // EOS，由 open_verified_reader 真读一帧验证，失败则整体回退 RGB32。
+    let (first, second) = if prefer_nv12 {
         (MFVideoFormat_NV12, MFVideoFormat_RGB32)
+    } else {
+        (MFVideoFormat_RGB32, MFVideoFormat_NV12)
     };
 
     for sub in [first, second] {
@@ -127,6 +134,58 @@ unsafe fn create_reader(path: &str, use_dxva: bool, dxm: Option<&IMFDXGIDeviceMa
             .is_ok()
         {
             return Some(reader);
+        }
+    }
+    None
+}
+
+// 真读到一帧才算"这个输出格式可用"。部分源在 NV12 输出上协商成功但首帧即 EOS，
+// 只看 SetCurrentMediaType 的返回值会误以为可用，结果视频链路空转。
+unsafe fn probe_first_sample(reader: &IMFSourceReader) -> bool {
+    // 最多读 3 次：MF 首帧可能先给一个 STREAMTICK 空帧再给真正的样本
+    for _ in 0..3 {
+        let mut flags = 0u32;
+        let mut ts: i64 = 0;
+        let mut sample: Option<IMFSample> = None;
+        let hr = reader.ReadSample(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32,
+            0,
+            None,
+            Some(&mut flags),
+            Some(&mut ts),
+            Some(&mut sample),
+        );
+        if hr.is_err() {
+            return false;
+        }
+        if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
+            return false;
+        }
+        if sample.is_some() {
+            // 回到片头。不支持 seek 的源也无妨：探测那一帧被丢弃，从第二帧继续。
+            let pv = PROPVARIANT::from(0i64);
+            let _ = reader.SetCurrentPosition(&GUID::default(), &pv);
+            return true;
+        }
+    }
+    false
+}
+
+// 按"优先格式 → 另一种格式"依次尝试，每个都先探测一帧。全都不可用才返回 None。
+unsafe fn open_verified_reader(
+    path: &str,
+    use_dxva: bool,
+    dxm: Option<&IMFDXGIDeviceManager>,
+    prefer_nv12: bool,
+) -> Option<IMFSourceReader> {
+    if let Some(r) = create_reader(path, use_dxva, dxm, prefer_nv12) {
+        if probe_first_sample(&r) {
+            return Some(r);
+        }
+    }
+    if let Some(r) = create_reader(path, use_dxva, dxm, !prefer_nv12) {
+        if probe_first_sample(&r) {
+            return Some(r);
         }
     }
     None
@@ -354,8 +413,9 @@ pub fn init(hwnd: HWND, path: &str) -> bool {
                 }
             }
 
-            let reader = create_reader(path, true, dxm.as_ref())
-                .or_else(|| create_reader(path, false, None));
+            // 每种模式都"NV12 优先 → RGB32 回退"，且必须真读到一帧才算可用
+            let reader = open_verified_reader(path, true, dxm.as_ref(), true)
+                .or_else(|| open_verified_reader(path, false, None, true));
             let reader = match reader {
                 Some(r) => r,
                 None => {
@@ -437,7 +497,7 @@ pub fn pump_frame() -> u32 {
             return 33;
         }
         unsafe {
-            if !s.trimmed && GetTickCount64() - s.start_tick > 15000 {
+            if !s.trimmed && GetTickCount64() - s.start_tick > 5000 {
                 s.trimmed = true;
                 let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
             }
@@ -489,8 +549,11 @@ pub fn pump_frame() -> u32 {
                     let seek_ok = reader.SetCurrentPosition(&GUID::default(), &pv).is_ok();
                     let probs = !seek_ok || s.loop_retry >= 2;
                     if probs {
-                        let nr = create_reader(&s.path, true, s.dxm.as_ref())
-                            .or_else(|| create_reader(&s.path, false, None));
+                        // 优先沿用当前上传纹理的像素格式（通常一致，避免布局不匹配）
+                        let nr = open_verified_reader(&s.path, true, s.dxm.as_ref(), s.up_is_nv12)
+                            .or_else(|| {
+                                open_verified_reader(&s.path, false, None, s.up_is_nv12)
+                            });
                         if let Some(nr) = nr {
                             s.reader = Some(nr);
                         } else {
@@ -519,8 +582,11 @@ pub fn pump_frame() -> u32 {
                 }
             }
 
-            if let Some(sw) = &s.swap {
-                let _ = sw.Present(1, DXGI_PRESENT(0));
+            // 只在真的解出新帧时呈现：交换链全程保留上一帧，重复 Present 只是无谓开销
+            if drawn > 0 {
+                if let Some(sw) = &s.swap {
+                    let _ = sw.Present(1, DXGI_PRESENT(0));
+                }
             }
             c.set(s);
             8

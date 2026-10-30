@@ -1,7 +1,7 @@
 # KiloWallpaper — C++ 参考实现
 
 Win32 原生 API 手写，**零第三方依赖**（只用 Windows SDK 与系统 DLL），
-8 个文件 **1926 行**，编译出两个二进制共 **99.0 KB**。
+8 个文件 **2021 行**，编译出两个二进制共 **99.0 KB**。
 
 > 这份实现的目的不是「功能最多」，而是「**最短的可读路径**跑通动态壁纸的全部难点」：
 > DXVA 硬解、DirectComposition 零拷贝呈现、Explorer 桌面嵌入、图标层 z 序锚定、双进程守护。
@@ -12,15 +12,15 @@ Win32 原生 API 手写，**零第三方依赖**（只用 Windows SDK 与系统 
 
 | 文件 | 行数 | 职责 |
 | --- | ---: | --- |
-| `main.cpp` | 592 | 入口、窗口与消息循环、看门狗、渲染调度、配置解析与**热重载**、单实例互斥 |
-| `d3dplayer.cpp` | 607 | 视频链路：Media Foundation `SourceReader` + DXVA 硬解 + D3D11 VideoProcessor + DirectComposition 呈现 + 无缝循环 |
-| `desktop.cpp` | 371 | 桌面嵌入：Progman/WorkerW 结构探测、双向 z 序锚定、图标层打穿与恢复、多级兜底、嵌入策略标记 |
+| `main.cpp` | 614 | 入口、窗口与消息循环、看门狗、渲染调度、配置解析与**热重载**、单实例互斥 |
+| `d3dplayer.cpp` | 661 | 视频链路：Media Foundation `SourceReader` + DXVA 硬解 + D3D11 VideoProcessor + DirectComposition 呈现 + 无缝循环 |
+| `desktop.cpp` | 389 | 桌面嵌入：Progman/WorkerW 结构探测、双向 z 序锚定、图标层打穿与恢复、多级兜底、嵌入策略标记 |
 | `guard.cpp` | 140 | 独立进程名守护程序（保活 + 优雅退出响应） |
 | `media.cpp` | 57 | GIF / 静态图解码（GDI+），帧延时表 |
 | `render.cpp` | 63 | GIF 帧绘制与双缓冲后备缓冲管理 |
-| `wallpaper.h` | 73 | 跨模块共享声明 |
+| `wallpaper.h` | 74 | 跨模块共享声明 |
 | `d3dplayer.h` | 23 | 视频播放器对外接口 |
-| **合计** | **1926** | |
+| **合计** | **2021** | |
 
 辅助脚本：`build.bat`（编译）、`setup.bat`（安装并启动）、`uninstall.bat`（卸载）、
 `关闭壁纸.bat`（优雅关闭）。

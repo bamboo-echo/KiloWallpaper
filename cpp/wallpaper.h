@@ -47,6 +47,7 @@ extern int g_winW, g_winH;
 extern UINT g_taskbarCreated;
 extern bool g_isVideo;       // true=视频 false=GIF/图片
 extern HWND g_parent;        // 当前嵌入的父窗口（desktop.cpp 定义，看门狗使用）
+extern bool g_embedOk;       // 当前窗口是否已嵌入成功（含顶层兜底，desktop.cpp 定义）
 
 // ---------- 媒体状态（media.cpp 定义） ----------
 extern Image* g_img;                     // GIF / 静态图（GDI+）

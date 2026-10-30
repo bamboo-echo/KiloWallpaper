@@ -82,7 +82,7 @@ unsafe 的 Win32 / COM 调用收敛在各模块内部（`d3dplayer.rs` / `deskto
 | `DynamicWallpaperGuard.exe` | 134,656 B |
 
 运行时链路与 C 版一致：DXVA 硬解 → VideoProcessor → DirectComposition → vsync，
-8ms 追帧调度、15 秒后 `SetProcessWorkingSetSize` 归还工作集、日志限频。
+8ms 追帧调度、5 秒后 `SetProcessWorkingSetSize` 归还工作集、日志限频。
 二进制比 C 版大来自 Rust std 静态链接，不影响运行时 CPU / 内存 / GPU 占用。
 
 ## 已知限制

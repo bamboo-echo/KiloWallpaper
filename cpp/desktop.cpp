@@ -15,6 +15,10 @@ extern HWND g_hwnd;
 
 // 当前嵌入的父窗口（main.cpp 看门狗使用）
 HWND g_parent = nullptr;
+// 当前窗口是否已处于"嵌入成功"状态（含顶层兜底）。兜底窗口没有父窗口，
+// GetParent 判不出"已嵌入"——若只看父窗口为空就重嵌，看门狗会每 3 秒
+// 重跑一遍 EmbedOrFallback（每次 Sleep 120ms 阻塞消息循环 + 追加一行日志）。
+bool g_embedOk = false;
 
 // 当前生效的嵌入策略名（如 "progman-layered" / "workerw-child" / "toplevel"）。
 // 嵌入成功后写入 wallpaper.embed 标记文件，供 tools/check_embed.py 与用户自查
@@ -77,6 +81,16 @@ static void EmbedLog(const wchar_t* msg, HWND w) {
     fwprintf(f, L"%04u-%02u-%02u %02u:%02u:%02u [embed] %s\n",
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, info);
     fclose(f);
+}
+
+// z 序校准每 3 秒调用一次。日志按"结果类型"去重：同一结果只写一行，
+// 只有状态变化（如锚定成功→失败）才再记一次。否则兜底/旧结构路径每拍
+// 追加一行（约 2.8 万行/天），而状态没变时的重复记录对排障没有价值。
+static void ZLog(const wchar_t* msg, HWND w) {
+    static const wchar_t* s_last = nullptr;
+    if (s_last && wcscmp(s_last, msg) == 0) return;
+    s_last = msg;
+    EmbedLog(msg, w);
 }
 
 void EnsureWallpaperZOrder(HWND hwnd);
@@ -210,7 +224,7 @@ void EnsureWallpaperZOrder(HWND hwnd) {
         // 顶层模式：直接压到 z 序最底（DWM 壁纸之上、图标层之下）
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        EmbedLog(L"zorder: toplevel bottom", nullptr);
+        ZLog(L"zorder: toplevel bottom", nullptr);
         return;
     }
 
@@ -254,23 +268,23 @@ void EnsureWallpaperZOrder(HWND hwnd) {
             }
             ok = false;
         }
-        if (!ok) EmbedLog(L"zorder: anchor FAILED (will retry)", nullptr);
+        if (!ok) ZLog(L"zorder: anchor FAILED (will retry)", nullptr);
     } else if (wcscmp(pcls, L"SHELLDLL_DefView") == 0) {
         HWND anchor = FindWindowExW(parent, nullptr, L"SysListView32", nullptr);
         if (!anchor) anchor = FindWindowExW(parent, nullptr, L"DirectUIHWND", nullptr);
         if (anchor) {
             SetWindowPos(hwnd, anchor, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            EmbedLog(L"zorder: after icon-list", anchor);
+            ZLog(L"zorder: after icon-list", anchor);
         } else {
             SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            EmbedLog(L"zorder: defview bottom", nullptr);
+            ZLog(L"zorder: defview bottom", nullptr);
         }
     } else {
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        EmbedLog(L"zorder: workerw bottom", nullptr);
+        ZLog(L"zorder: workerw bottom", nullptr);
     }
 }
 
@@ -292,6 +306,7 @@ static void ApplyFallbackTopLevel(HWND hwnd) {
 
 bool EmbedOrFallback(HWND hwnd) {
     HWND progman = FindProgman();
+    g_embedOk = false;   // 本次嵌入尚未成功，由下面各成功分支置 true
 
     // ★ 固定唤醒 "raised desktop"：0x052C 让系统把壁纸画进 Progman 下的
     // 全屏 WorkerW（并清空 DefView 列表背景）。2026-09-17 实测复现：
@@ -340,6 +355,7 @@ bool EmbedOrFallback(HWND hwnd) {
             EnsureWallpaperZOrder(hwnd);
             RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
             MarkEmbedStrategy(L"progman-layered");
+            g_embedOk = true;
             EmbedLog(L"embed: progman-layered anchor", defView);
             return true;
         }
@@ -358,6 +374,7 @@ bool EmbedOrFallback(HWND hwnd) {
             g_wpDefView = nullptr;
             g_wpWorkerW = nullptr;
             MarkEmbedStrategy(L"workerw-child");
+            g_embedOk = true;
             EmbedLog(L"embed: classic workerw-child", workerW);
             return true;
         }
@@ -365,6 +382,7 @@ bool EmbedOrFallback(HWND hwnd) {
 
     // ---- 兜底：顶层窗口压底（已知会盖图标，仅保底不黑屏）----
     MarkEmbedStrategy(L"toplevel-fallback");
+    g_embedOk = true;
     EmbedLog(L"embed: toplevel fallback", progman);
     ApplyFallbackTopLevel(hwnd);
     return true;

@@ -72,7 +72,7 @@ fn dpLog(comptime fmt: []const u8, args: anytype) void {
 }
 
 // ---------- 解码器：优先 DXVA 硬解，失败逐级回退 ----------
-fn createReader(useDxva: bool) ?*win.c.IMFSourceReader {
+fn createReader(useDxva: bool, preferNv12: bool) ?*win.c.IMFSourceReader {
     var attr: ?*win.c.IMFAttributes = null;
     if (win.c.MFCreateAttributes(&attr, 4) != win.S_OK or attr == null) return null;
     if (useDxva and g_dxm != null) {
@@ -100,9 +100,10 @@ fn createReader(useDxva: bool) ?*win.c.IMFSourceReader {
     _ = reader.?.*.lpVtbl.*.SetStreamSelection.?(reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_ALL_STREAMS))), win.c.FALSE);
     _ = reader.?.*.lpVtbl.*.SetStreamSelection.?(reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_FIRST_VIDEO_STREAM))), win.c.TRUE);
 
-    // 输出类型协商：DXVA → 优先 RGB32（强制转换 MFT 下载）；软解 → 优先 NV12。
-    const first = if (useDxva) &win.c.MFVideoFormat_RGB32 else &win.c.MFVideoFormat_NV12;
-    const second = if (useDxva) &win.c.MFVideoFormat_NV12 else &win.c.MFVideoFormat_RGB32;
+    // 输出类型协商：优先 NV12 —— 每帧 CPU 上传 5.5MB，只有 RGB32 的约 2/5。
+    // 部分源 NV12 首帧即 EOS，由 openVerifiedReader 真读一帧验证，失败回退 RGB32。
+    const first = if (preferNv12) &win.c.MFVideoFormat_NV12 else &win.c.MFVideoFormat_RGB32;
+    const second = if (preferNv12) &win.c.MFVideoFormat_RGB32 else &win.c.MFVideoFormat_NV12;
     var mt: ?*win.c.IMFMediaType = null;
     if (win.c.MFCreateMediaType(&mt) == win.S_OK and mt != null) {
         _ = mt.?.*.lpVtbl.*.SetGUID.?(mt, &win.c.MF_MT_MAJOR_TYPE, &win.c.MFMediaType_Video);
@@ -119,6 +120,48 @@ fn createReader(useDxva: bool) ?*win.c.IMFSourceReader {
         if (h == win.S_OK) return reader;
     }
     release(reader);
+    return null;
+}
+
+// 真读到一帧才算"这个输出格式可用"。部分源 NV12 协商成功但首帧即 EOS，
+// 只看 SetCurrentMediaType 返回值会误以为可用，导致视频链路空转。
+fn probeFirstSample(reader: *win.c.IMFSourceReader) bool {
+    var i: usize = 0;
+    while (i < 3) : (i += 1) { // MF 首帧可能先给一个 STREAMTICK 空帧
+        var flags: win.DWORD = 0;
+        var ts: i64 = 0;
+        var s: ?*win.c.IMFSample = null;
+        const hr = reader.*.lpVtbl.*.ReadSample.?(reader, @as(c_ulong, @bitCast(@as(c_int, win.c.MF_SOURCE_READER_FIRST_VIDEO_STREAM))), 0, null, &flags, &ts, &s);
+        const eos = (flags & win.c.MF_SOURCE_READERF_ENDOFSTREAM) != 0;
+        const got = hr == win.S_OK and !eos and s != null;
+        if (s != null) release(s);
+        if (got) {
+            // 回到片头。不支持 seek 的源也无妨：探测那一帧被丢弃，从第二帧继续。
+            var pv: win.c.PROPVARIANT = std.mem.zeroes(win.c.PROPVARIANT);
+            win.PropVariantInit(&pv);
+            const pvRaw: *PVLayout = @ptrCast(&pv);
+            pvRaw.vt = @intCast(win.c.VT_I8);
+            pvRaw.hVal = 0;
+            const zeroGuid: win.GUID = std.mem.zeroes(win.GUID);
+            _ = reader.*.lpVtbl.*.SetCurrentPosition.?(reader, &zeroGuid, &pv);
+            win.PropVariantClear(&pv);
+            return true;
+        }
+        if (hr != win.S_OK or eos) return false;
+    }
+    return false;
+}
+
+// 按"优先格式 → 另一种格式"依次尝试，每个都先探测一帧。全都不可用才返回 null。
+// 注意 release() 只接受 optional 指针（内部做 obj != null 与 obj.?），
+// 因此不解包后传递，保持 ?*T 形态。
+fn openVerifiedReader(useDxva: bool, preferNv12: bool) ?*win.c.IMFSourceReader {
+    const r1 = createReader(useDxva, preferNv12);
+    if (r1 != null and probeFirstSample(r1.?)) return r1;
+    release(r1);
+    const r2 = createReader(useDxva, !preferNv12);
+    if (r2 != null and probeFirstSample(r2.?)) return r2;
+    release(r2);
     return null;
 }
 
@@ -341,10 +384,12 @@ pub fn d3dInit(hwnd: win.HWND, videoPath: []const win.WCHAR) bool {
         g_hwDecode = false;
         dpLog("probe: MF reader skipped (KW_NO_READER=1)", .{});
     } else {
-        g_reader = createReader(true);
-        g_hwDecode = g_reader != null;
+        // 每种模式都"NV12 优先 → RGB32 回退"，且必须真读到一帧才算可用
+        g_hwDecode = true;
+        g_reader = openVerifiedReader(true, true);
         if (g_reader == null) {
-            g_reader = createReader(false);
+            g_hwDecode = false;
+            g_reader = openVerifiedReader(false, true);
             if (g_reader == null) {
                 dpLog("reader failed", .{});
                 d3dShutdown();
@@ -552,8 +597,9 @@ var zerocopy_logged: bool = false;
 pub fn d3dPumpFrame() win.UINT {
     if (!g_active or g_reader == null) return 33;
 
-    // 延迟 trim（播放稳定后归还备用页，任务管理器占用下降）
-    if (!g_trimmed and g_startTick != 0 and win.c.GetTickCount64() - g_startTick > 15000) {
+    // 延迟 trim（播放稳定后归还备用页，任务管理器占用下降）。
+    // 5 秒足以覆盖"出首帧 + 解码器面池分配"的高峰；更早归还的代价只是少量缺页。
+    if (!g_trimmed and g_startTick != 0 and win.c.GetTickCount64() - g_startTick > 5000) {
         g_trimmed = true;
         _ = win.c.SetProcessWorkingSetSize(win.c.GetCurrentProcess(), @as(win.SIZE_T, @bitCast(@as(isize, -1))), @as(win.SIZE_T, @bitCast(@as(isize, -1))));
     }
@@ -606,8 +652,9 @@ pub fn d3dPumpFrame() win.UINT {
             const loopProbs = seekHr != win.S_OK or g_loopRetry >= 2;
             if (loopProbs) {
                 // 分级回退的最后一级：重建整个 SourceReader
-                const nr = createReader(true);
-                const nr2 = if (nr == null) createReader(false) else nr;
+                // 优先沿用当前上传纹理的像素格式（通常一致，避免布局不匹配）
+                const nr = openVerifiedReader(true, g_upIsNv12);
+                const nr2 = if (nr == null) openVerifiedReader(false, g_upIsNv12) else nr;
                 if (nr2 != null) {
                     release(g_reader);
                     g_reader = nr2;
@@ -646,8 +693,8 @@ pub fn d3dPumpFrame() win.UINT {
         if (!ok) break;
     }
 
-    // 本 tick 无论是否更新内容都 vsync 呈现（重复帧无开销，节奏对齐刷新率）
-    if (g_swap != null) _ = presentNow();
+    // 只在真的解出新帧时呈现：交换链保留上一帧，重复 Present 只是无谓开销
+    if (drawn > 0 and g_swap != null) _ = presentNow();
     return 8; // 高频 tick：追帧逻辑吸收定时器误差
 }
 
